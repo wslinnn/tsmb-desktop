@@ -1,14 +1,73 @@
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+
+/// M0 四件套验证命令：锁定 = 鼠标穿透。M4 会并入 lyrics_window 模块。
 #[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
+fn toggle_lyrics_lock(app: AppHandle, locked: bool) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("lyrics") {
+        win.set_ignore_cursor_events(locked).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // single-instance 必须最先注册：双开时只聚焦已有实例的窗口
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.show();
+                let _ = win.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet])
+        .plugin(tauri_plugin_store::Builder::new().build())
+        .invoke_handler(tauri::generate_handler![toggle_lyrics_lock])
+        .setup(|app| {
+            create_lyrics_window(app.handle())?;
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            // 窗口关闭规则（无托盘闭环）：关主窗时歌词窗在 → 只隐藏主窗；
+            // 歌词窗关闭 → 唤回隐藏中的主窗。两个窗口都没了应用自然退出。
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                match window.label() {
+                    "main" => {
+                        if window.app_handle().get_webview_window("lyrics").is_some() {
+                            api.prevent_close();
+                            let _ = window.hide();
+                        }
+                    }
+                    "lyrics" => {
+                        if let Some(main) = window.app_handle().get_webview_window("main") {
+                            let _ = main.show();
+                            let _ = main.set_focus();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+fn create_lyrics_window(app: &AppHandle) -> tauri::Result<()> {
+    if app.get_webview_window("lyrics").is_some() {
+        return Ok(());
+    }
+    let win = WebviewWindowBuilder::new(app, "lyrics", WebviewUrl::App("index.html".into()))
+        .title("desktop-lyrics")
+        .transparent(true)
+        .decorations(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .shadow(false)
+        .resizable(false)
+        .focused(false)
+        .focusable(false) // 点击/拖动不抢前台焦点（游戏场景关键）
+        .inner_size(900.0, 110.0)
+        .build()?;
+    // 默认锁定（穿透）；M4 起从持久化设置恢复
+    win.set_ignore_cursor_events(true)?;
+    Ok(())
 }
