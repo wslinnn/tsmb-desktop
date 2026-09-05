@@ -19,6 +19,7 @@ export function getState(): Promise<{
   bots: unknown;
   activeBotId: string | null;
   settings: Settings;
+  lyrics: import("./types").LyricsDataEvent | null;
 }> {
   return invoke("get_state");
 }

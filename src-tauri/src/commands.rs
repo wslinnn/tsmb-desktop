@@ -126,16 +126,19 @@ pub async fn get_state(state: State<'_, SharedState>) -> Result<Value, String> {
     let connection = state.conn.read().await.clone();
     let bots = state.bots.read().await.clone();
     let settings = state.settings.read().await.clone();
+    let last_lyrics = state.last_lyrics.lock().await.clone();
     Ok(serde_json::json!({
         "auth": auth,
         "connection": connection,
         "bots": bots,
         "activeBotId": settings.active_bot_id,
         "settings": settings,
+        "lyrics": last_lyrics,
     }))
 }
 
 /// 歌词设置字段级合并（patch -> lyrics 子对象）+ 持久化 + 广播。
+/// 附带窗口副作用：enabled 建窗/销窗、locked 应用穿透、fontSize 保持底边调高。
 #[tauri::command]
 pub async fn update_lyrics_settings(
     app: AppHandle,
@@ -154,6 +157,26 @@ pub async fn update_lyrics_settings(
         save_settings(&app, &s);
         s.clone()
     };
+
+    // enabled 变化 → 建窗/销窗
+    if patch.get("enabled").and_then(Value::as_bool).is_some() {
+        if merged.lyrics.enabled {
+            crate::lyrics_window::create(&app).map_err(|e| e.to_string())?;
+        } else {
+            crate::lyrics_window::close(&app);
+        }
+    }
+    // locked 变化 → 应用穿透
+    if let Some(locked) = patch.get("locked").and_then(Value::as_bool) {
+        if let Some(win) = app.get_webview_window("lyrics") {
+            win.set_ignore_cursor_events(locked).map_err(|e| e.to_string())?;
+        }
+    }
+    // fontSize 变化 → 保持底边调高度
+    if patch.get("fontSize").and_then(Value::as_f64).is_some() {
+        crate::lyrics_window::resize_for_font_size(&app, merged.lyrics.font_size);
+    }
+
     events::emit_settings(&app, &merged);
     Ok(())
 }
@@ -167,16 +190,13 @@ pub async fn set_lyrics_enabled(
     update_lyrics_settings(app, state, serde_json::json!({ "enabled": enabled })).await
 }
 
-/// 锁定 = 鼠标穿透；同步窗口样式 + 持久化。
+/// 锁定 = 鼠标穿透（副作用由 update_lyrics_settings 统一处理）。
 #[tauri::command]
 pub async fn set_lyrics_locked(
     app: AppHandle,
     state: State<'_, SharedState>,
     locked: bool,
 ) -> Result<(), String> {
-    if let Some(win) = app.get_webview_window("lyrics") {
-        win.set_ignore_cursor_events(locked).map_err(|e| e.to_string())?;
-    }
     update_lyrics_settings(app, state, serde_json::json!({ "locked": locked })).await
 }
 

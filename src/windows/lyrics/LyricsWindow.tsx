@@ -1,7 +1,61 @@
+import { useEffect } from "react";
+import { hydrate, useStore } from "../../store";
+import { lineStyles } from "../../lyricsStyle";
+import ControlBar from "./ControlBar";
+
+/** 桌面歌词窗口：消费 lyrics-data（歌词行）+ lyrics-tick（10Hz 行索引）。
+ *  双行规则：有翻译 → 「原文+翻译」；无翻译 → 「当前行+下一行」；
+ *  无歌词/首行前/加载中 → 歌名占位。锁定态整窗穿透（Rust set_ignore_cursor_events）。 */
 export default function LyricsWindow() {
+  useEffect(() => {
+    void hydrate();
+  }, []);
+
+  const settings = useStore((s) => s.settings);
+  const lyrics = useStore((s) => s.lyrics);
+  const tick = useStore((s) => s.tick);
+  const bots = useStore((s) => s.bots);
+  const activeBotId = useStore((s) => s.activeBotId);
+  const hovered = useStore((s) => s.lyricsHovered);
+  const setHovered = useStore((s) => s.setLyricsHovered);
+
+  if (!settings) return null;
+  const ly = settings.lyrics;
+
+  // tick 与歌词数据是两条事件流，songKey 对齐才可用（切歌瞬间的竞态防护）
+  const linesReady =
+    lyrics?.state === "ok" && lyrics.lines && tick && lyrics.songKey === tick.songKey;
+
+  const bot = bots.find((b) => b.id === activeBotId) ?? null;
+  const song = bot?.currentSong ?? null;
+
+  let main: string;
+  let sub = "";
+  if (linesReady && tick.lineIndex != null) {
+    const cur = lyrics!.lines![tick.lineIndex];
+    main = cur.text;
+    if (cur.translation && ly.showTranslation) {
+      sub = cur.translation;
+    } else if (tick.nextIndex != null) {
+      sub = lyrics!.lines![tick.nextIndex].text;
+    }
+  } else if (lyrics?.state === "loading") {
+    main = song ? `${song.title} — ${song.artist}` : "歌词加载中…";
+    sub = "歌词加载中…";
+  } else {
+    // none / 首行前 / 未播放
+    main = song ? song.title : "tsmb-desktop 桌面歌词";
+    sub = song ? "暂无歌词" : "等待播放…";
+  }
+
+  const { main: ms, sub: ss } = lineStyles(ly);
+  const locked = ly.locked;
+
   return (
     <div
       data-tauri-drag-region
+      onMouseEnter={() => !locked && setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       style={{
         width: "100vw",
         height: "100vh",
@@ -9,27 +63,42 @@ export default function LyricsWindow() {
         flexDirection: "column",
         alignItems: "center",
         justifyContent: "center",
-        gap: 8,
+        gap: 6,
         userSelect: "none",
+        opacity: ly.opacity,
+        cursor: locked ? "default" : "move",
+        overflow: "hidden",
       }}
     >
+      {hovered && !locked && <ControlBar />}
       <div
         data-tauri-drag-region
         style={{
-          fontSize: 28,
-          fontWeight: 700,
-          color: "#ffffff",
-          textShadow: "0 1px 2px rgba(0,0,0,.9), 0 0 6px rgba(0,0,0,.8)",
+          ...ms,
+          lineHeight: 1.5,
+          maxWidth: "96%",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
         }}
       >
-        桌面歌词窗口 · M0 四件套验证
+        {main}
       </div>
-      <div
-        data-tauri-drag-region
-        style={{ fontSize: 15, color: "rgba(255,255,255,.75)", textShadow: "0 1px 2px rgba(0,0,0,.9)" }}
-      >
-        解锁后可拖动（drag-region） · 默认锁定穿透
-      </div>
+      {sub && (
+        <div
+          data-tauri-drag-region
+          style={{
+            ...ss,
+            lineHeight: 1.4,
+            maxWidth: "96%",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {sub}
+        </div>
+      )}
     </div>
   );
 }

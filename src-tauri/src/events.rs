@@ -26,7 +26,6 @@ pub struct LyricsDataEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lines: Option<Arc<Vec<LyricLine>>>,
 }
-
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TickEvent {
@@ -68,33 +67,43 @@ pub fn emit_active_bot(app: &tauri::AppHandle, bot_id: Option<&str>) {
     let _ = app.emit("active-bot", serde_json::json!({ "botId": bot_id }));
 }
 
-pub fn emit_lyrics_data(app: &tauri::AppHandle, bot_id: &str, song_key: &str, phase: LyricsPhase) {
-    let _ = app.emit(
-        "lyrics-data",
-        LyricsDataEvent {
-            bot_id: bot_id.to_string(),
-            song_key: song_key.to_string(),
-            state: phase,
-            lines: None,
-        },
-    );
+/// 发射 lyrics-data 前先写入 state.last_lyrics（晚加载的窗口从 get_state 补水）。
+pub fn emit_lyrics_data(
+    app: &tauri::AppHandle,
+    state: &SharedState,
+    bot_id: &str,
+    song_key: &str,
+    phase: LyricsPhase,
+) {
+    let ev = LyricsDataEvent {
+        bot_id: bot_id.to_string(),
+        song_key: song_key.to_string(),
+        state: phase,
+        lines: None,
+    };
+    if let Ok(mut slot) = state.last_lyrics.try_lock() {
+        *slot = Some(ev.clone());
+    }
+    let _ = app.emit("lyrics-data", &ev);
 }
 
 pub fn emit_lyrics_data_lines(
     app: &tauri::AppHandle,
+    state: &SharedState,
     bot_id: &str,
     song_key: &str,
     lines: Arc<Vec<LyricLine>>,
 ) {
-    let _ = app.emit(
-        "lyrics-data",
-        LyricsDataEvent {
-            bot_id: bot_id.to_string(),
-            song_key: song_key.to_string(),
-            state: LyricsPhase::Ok,
-            lines: Some(lines),
-        },
-    );
+    let ev = LyricsDataEvent {
+        bot_id: bot_id.to_string(),
+        song_key: song_key.to_string(),
+        state: LyricsPhase::Ok,
+        lines: Some(lines),
+    };
+    if let Ok(mut slot) = state.last_lyrics.try_lock() {
+        *slot = Some(ev.clone());
+    }
+    let _ = app.emit("lyrics-data", &ev);
 }
 
 pub fn emit_settings(app: &tauri::AppHandle, settings: &crate::settings::Settings) {

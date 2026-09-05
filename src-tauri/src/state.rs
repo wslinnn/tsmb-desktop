@@ -60,6 +60,9 @@ pub struct AppState {
     pub lyrics_cache: Mutex<HashMap<String, Arc<Vec<LyricLine>>>>,
     /// 每 bot 的歌词请求代数：切歌后旧响应作废。
     pub lyrics_gen: Mutex<HashMap<String, u64>>,
+    /// 最近一次歌词数据快照：歌词窗口加载晚于广播时会错过 lyrics-data，
+    /// get_state 里补发（水合契约的一部分）。
+    pub last_lyrics: Mutex<Option<crate::events::LyricsDataEvent>>,
     /// 登录态版本号：login/logout/watch 驱动 ws 任务重连。
     pub auth_rev: tokio::sync::watch::Sender<u64>,
 }
@@ -91,6 +94,7 @@ impl AppState {
             timings: Mutex::new(HashMap::new()),
             lyrics_cache: Mutex::new(HashMap::new()),
             lyrics_gen: Mutex::new(HashMap::new()),
+            last_lyrics: Mutex::new(None),
             auth_rev,
         }
     }

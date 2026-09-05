@@ -1,5 +1,6 @@
 import { useStore } from "../../store";
 import { updateLyricsSettings } from "../../commands";
+import { outlineShadow } from "../../lyricsStyle";
 import type { LyricsSettings } from "../../types";
 
 const FONT_PRESETS = [
@@ -172,16 +173,4 @@ function LyricsPreview({ ly }: { ly: LyricsSettings }) {
       </div>
     </div>
   );
-}
-
-/** 多向 text-shadow 模拟描边（歌词窗口 M4 用同一实现）。 */
-export function outlineShadow(color: string, width: number): string {
-  if (width <= 0) return "none";
-  const dirs = [
-    [0, -1], [0, 1], [-1, 0], [1, 0],
-    [-0.7, -0.7], [0.7, -0.7], [-0.7, 0.7], [0.7, 0.7],
-  ];
-  return dirs
-    .map(([x, y]) => `${(x * width).toFixed(1)}px ${(y * width).toFixed(1)}px 1px ${color}`)
-    .join(", ");
 }

@@ -18,13 +18,13 @@ pub fn find_line(lines: &[LyricLine], t: f64) -> Option<usize> {
 /// （快速切歌时旧响应不覆盖新歌）。
 pub async fn ensure_lyrics(app: &tauri::AppHandle, state: &SharedState, status: &BotStatus) {
     let Some(song) = status.current_song.as_ref() else {
-        events::emit_lyrics_data(app, &status.id, "", events::LyricsPhase::None);
+        events::emit_lyrics_data(app, state, &status.id, "", events::LyricsPhase::None);
         return;
     };
     let key = song_key(song);
 
     if let Some(cached) = state.lyrics_cache.lock().await.get(&key) {
-        events::emit_lyrics_data_lines(app, &status.id, &key, cached.clone());
+        events::emit_lyrics_data_lines(app, state, &status.id, &key, cached.clone());
         return;
     }
 
@@ -34,7 +34,7 @@ pub async fn ensure_lyrics(app: &tauri::AppHandle, state: &SharedState, status: 
         gens.insert(status.id.clone(), g);
         g
     };
-    events::emit_lyrics_data(app, &status.id, &key, events::LyricsPhase::Loading);
+    events::emit_lyrics_data(app, state, &status.id, &key, events::LyricsPhase::Loading);
 
     let fetched = {
         let Some((base, token)) = state.creds().await else { return };
@@ -56,11 +56,11 @@ pub async fn ensure_lyrics(app: &tauri::AppHandle, state: &SharedState, status: 
             }
             cache.insert(key.clone(), shared.clone());
             drop(cache);
-            events::emit_lyrics_data_lines(app, &status.id, &key, shared);
+            events::emit_lyrics_data_lines(app, state, &status.id, &key, shared);
         }
-        Ok(_) => events::emit_lyrics_data(app, &status.id, &key, events::LyricsPhase::None),
+        Ok(_) => events::emit_lyrics_data(app, state, &status.id, &key, events::LyricsPhase::None),
         // 网络失败：不缓存（下次切回该曲重试），发 None 让前端显示歌名占位
-        Err(_) => events::emit_lyrics_data(app, &status.id, &key, events::LyricsPhase::None),
+        Err(_) => events::emit_lyrics_data(app, state, &status.id, &key, events::LyricsPhase::None),
     }
 }
 

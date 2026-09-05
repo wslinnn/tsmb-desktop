@@ -19,6 +19,8 @@ interface AppStore {
   settings: Settings | null;
   lyrics: LyricsDataEvent | null;
   tick: TickEvent | null;
+  /** 歌词窗口 hover 态（仅解锁态有鼠标事件） */
+  lyricsHovered: boolean;
 
   setAuth: (a: AuthSnapshot) => void;
   setConn: (c: ConnSnapshot) => void;
@@ -27,6 +29,7 @@ interface AppStore {
   setSettings: (s: Settings) => void;
   setLyrics: (l: LyricsDataEvent) => void;
   setTick: (t: TickEvent) => void;
+  setLyricsHovered: (h: boolean) => void;
 }
 
 export const useStore = create<AppStore>((set) => ({
@@ -38,6 +41,7 @@ export const useStore = create<AppStore>((set) => ({
   settings: null,
   lyrics: null,
   tick: null,
+  lyricsHovered: false,
 
   setAuth: (auth) => set({ auth }),
   setConn: (connection) => set({ connection }),
@@ -46,6 +50,7 @@ export const useStore = create<AppStore>((set) => ({
   setSettings: (settings) => set({ settings }),
   setLyrics: (lyrics) => set({ lyrics }),
   setTick: (tick) => set({ tick }),
+  setLyricsHovered: (lyricsHovered) => set({ lyricsHovered }),
 }));
 
 let subscribed = false;
@@ -73,5 +78,6 @@ export async function hydrate(): Promise<void> {
   s.setBots(snap.bots as BotStatus[]);
   s.setActiveBot(snap.activeBotId);
   s.setSettings(snap.settings);
+  if (snap.lyrics) s.setLyrics(snap.lyrics);
   useStore.setState({ hydrated: true });
 }
