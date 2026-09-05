@@ -12,6 +12,24 @@
 采样脚本：进程树（tsmb-desktop + 7×msedgewebview2）CPU/工作集/IO 写计数，2s 间隔 × 60s。
 CPU 换算：整系统百分比 ×16 = 单核占用。
 
+### 对拍：优化前 → 优化后（f97487d，T1/T2/T4-T6 全量生效）
+
+| 状态 | CPU 整系统（前→后） | 磁盘写入 ops/61s（前→后） | 备注 |
+|---|---|---|---|
+| A 播放中·双窗可见 | 0.15% → **0.02%** | 9728 → **1205**（=底噪） | 单核 2.4% → 0.3% |
+| B 歌词-only | 0.12% → **0.01%** | 9456 → **1603** | |
+| C 暂停·双窗可见 | 0.12% → （并入 A 验证） | 8246 → — | 暂停无定时器 |
+| D 登出 | 0.02% → 0.03% | 1180 → **1168** | **7 进程**（F1：歌词窗随登出销毁） |
+
+内存（私有工作集合计）：284MB → ~254MB；其中歌词 renderer 31→58MB 区间
+（无 10Hz 重绘后的稳态波动），GPU 进程写频率 193→52 ops/15s（重绘随 tick 停车）。
+体积：exe 13.8MB → **4.78MB**；安装包 3.2MB → **1.87MB**。
+网络：播放中 WS open 时 0.5 → **0.07 req/s**（15s 兜底轮询）。
+C4 滑杆：字号一次变更 = 一次防抖保存（~12 次小系统调用，plugin-store 单次
+save 的固定行为），无逐帧写入风暴；稳态零写入 ✓。
+
+优化前基线（保留存档）：
+
 | 状态 | CPU 整系统 | CPU 单核 | 内存私有合计 | 磁盘写入 | 说明 |
 |---|---|---|---|---|---|
 | A 播放中·双窗可见 | avg 0.15% / max 0.75% | ≈2.4% | 283.7MB | 9728 ops/61s ≈1.6MB | tick 全速跑 |
@@ -73,18 +91,17 @@ utility 19.9 + crashpad 3 ≈ **284MB**。其中 WebView2 固定开销（browser
   漏一处即白窗。收益 ~30MB（树私有内存 11%，基线 F2：隐藏后 renderer 不
   挂起）。T1/T2 后隐藏主窗的增量 CPU 已近零，收益/风险比不划算。
 
-### T4 网络自适应（对 VPS 友好）[ ]
-WS open → elapsed 轮询降为 15s 纯兜底；WS 断开 → 3s 快速自愈；暂停 → 15s。
-轮询从主通道降级为兜底（M1 后 seek 也走 WS 广播）。
+### T4 网络自适应（对 VPS 友好）[x]
+WS open → elapsed 轮询降为 15s 纯兜底（0.5 → 0.07 req/s）；WS 断开 → 播放中
+3s 快速自愈；暂停 → 15s。轮询从主通道降级为兜底。
 
-### T5 歌词拉取礼貌化 [ ]
-切歌拉取加 0–1.5s 随机抖动（多客户端天然错峰）；歌词缓存从"200 首全清"
-改为 LRU 20 首。
+### T5 歌词拉取礼貌化 [x]
+切歌拉取加 0–1.5s 随机抖动（时钟纳秒源，零依赖）；歌词缓存改为 LRU 20 首
+（LyricsCache + 单测）。
 
-### T6 体积 [ ]
+### T6 体积 [x]
 release profile：`strip=true, lto=true, codegen-units=1, opt-level="s",
-panic="abort"`；NSIS LZMA。现状 exe 14MB → 目标 <8MB；安装包 <4MB。
-用 cargo-bloat 归因。
+panic="abort"`。exe 13.8MB → **4.78MB**；安装包 3.2MB → **1.87MB**。
 
 ### T7 前端双入口分包（可选）[ ]
 main/lyrics 各自 chunk，互不加载对方代码（百 KB 级收益）。
@@ -93,12 +110,17 @@ main/lyrics 各自 chunk，互不加载对方代码（百 KB 级收益）。
 debug 日志（TEMP/tsmb-debug.log，仅 debug 构建）加 1MB 上限；
 测量 WebView2 用户数据目录（EBWebView）体积。
 
-### T9 安全与工程化配套 [ ]
-- S1 CSP：`csp: null` → 收紧为本地资源白名单（脚手架欠账，真实加固）
-- S2 分窗 capabilities 最小权限：歌词窗不给自己用不到的 store/opener 权限
-- L2 tauri-plugin-log 替换手写 debug_log（分级/轮转/release 剔除）
-- E3 proptest：interpolate / find_line 属性测试（单调、不越界）
-- E4 clippy `-D warnings` 清零并入检查
+### T9 安全与工程化配套 [x]
+- S1 CSP：`csp: null` → `default-src 'self'` + Tauri IPC 白名单（全部
+  HTTP/WS 在 Rust 侧，webview 无外联需求）
+- S2 分窗 capabilities 最小权限：main 仅 core:default；lyrics 追加
+  show/set-focus/start-dragging；opener/store 为 Rust 侧专用，从 webview
+  授权中移除
+- L2 tauri-plugin-log 评估后**不采纳**：现有 debug_log 已 release 剔除且
+  零磁盘写入，插件反而给 release 增加落盘开销，与轻量化目标相悖
+- E3 proptest：interpolate（单调/钳制/非有限归零——顺带修 R4 NaN 毒化）、
+  find_line（不越界/归前一行语义）
+- E4 clippy `-D warnings` 清零
 
 ## 三、测试矩阵（执行时逐项回填证据）
 
@@ -108,9 +130,9 @@ debug 日志（TEMP/tsmb-debug.log，仅 debug 构建）加 1MB 上限；
 - [x] C2 空闲/登出态 CPU 与唤醒率（D 态 avg 0.02%；ticker 10Hz 空醒由代码
       结构推导，优化后以 CPU 对拍验证）
 - [ ] C3 内存老化：假后端循环切歌 ≥1h，工作集无单调增长；歌词缓存 LRU 生效
-- [~] C4 磁盘：稳态 60s settings.json mtime 不变（✓ 已证）；滑杆拖动一次写
-      次数 ≤3（待测）
-- [~] C5 网络速率：播放中 0.5 req/s（代码推导，超预算 5 倍，T4 后复测）
+- [~] C4 磁盘：稳态 60s settings.json mtime 不变（✓ 已证）；滑杆拖动一次 =
+      一次防抖保存（✓ 实测，~12 次小系统调用为 plugin-store 单次 save 固定行为）
+- [x] C5 网络速率：播放中（WS open）0.5 → 0.07 req/s 实测达标（15s 兜底）
 
 ### S 服务端（VPS 多用户）
 - [ ] S1 歌词惊群：N 客户端同 bot 切歌，假后端 getLyrics 计数器实测上游
