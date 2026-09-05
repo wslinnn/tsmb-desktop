@@ -133,7 +133,8 @@ no-op，风险限于开发机，暂不加。
 - [x] C2 空闲/登出态 CPU 与唤醒率（D 态 avg 0.02%；ticker 10Hz 空醒由代码
       结构推导，优化后以 CPU 对拍验证）
 - [ ] C3 内存老化：假后端循环切歌 ≥1h，工作集无单调增长；歌词缓存 LRU 生效
-- [~] C4 磁盘：稳态 60s settings.json mtime 不变（✓ 已证）；滑杆拖动一次 =
+      （按用户要求跳过长挂机项，需要时补跑；LRU 驱逐已有单测覆盖）
+- [x] C4 磁盘：稳态 60s settings.json mtime 不变（✓ 已证）；滑杆拖动一次 =
       一次防抖保存（✓ 实测，~12 次小系统调用为 plugin-store 单次 save 固定行为）
 - [x] C5 网络速率：播放中（WS open）0.5 → 0.07 req/s 实测达标（15s 兜底）
 
@@ -143,29 +144,71 @@ no-op，风险限于开发机，暂不加。
       歌词/歌单/专辑/搜索/详情 LRU+TTL 缓存 + /lyrics 限流；同歌重复请求
       收敛为 1 次穿透由装饰器/路由单测覆盖（双桌面客户端实测受
       single-instance 限制，以单测代验）
-- [ ] S2 轮询负载：N=10/50/100 模拟客户端（WS+轮询脚本），VPS CPU/事件循环延迟
-- [ ] S3 广播扇出：stateChange ~30次/歌 × N 连接成本
-- [ ] S4 单 token 多连接：验证服务端无每 token 连接上限（预判缺失，记录）
+- [x] S2 轮询负载：本机模拟（16 核，非真实 VPS，脚本 scripts/load-sim.mjs
+      于 bot 仓库）。N=10/50/100 客户端（WS + 3s 轮询）25s 窗口：
+      elapsed RTT p50=2ms、p95=10/25/46ms、max≤51ms，0 错误；
+      服务器 node CPU 0.03%/0.06%/0.13%（整系统 16 核归一）——
+      单进程 Node 余量充足
+- [x] S3 广播扇出：同上模拟，stateChange（假后端 5s/次）N 客户端全量送达
+      （100 连接 500 条/25s），0 丢失。真实后端 ~30次/歌 的成本按同量级
+      线性外推
+- [x] S4 单 token 多连接：代码走查确认无按 token 去重/上限——升级校验通过
+      即 `clients.add(ws)`（server.ts:321 + websocket.ts:81），每连接独立
+      收广播；10 台上限是 client_tokens 的 token 数量限制而非连接数。
 
 ### A 越权与安全
-- [ ] A1 受限 member：REST /api/bot、/api/player/:id/elapsed、WS init 三处
-      范围一致性（player 路由是否校验 per-user bot 可见性——预判 Web 端既有缺口）
-- [ ] A2 权限收窄时效：member WS botScope 握手盖章、无 live re-scope
-      （仅 guest 有）——量化暴露窗口，记录
-- [ ] A3 token 五条失效路径：过期/DELETE/改密码/管理员重置/删除用户（已有
-      e2e+单测，回归即可）
-- [ ] A4 CORS 缺席论证：Bearer 放行 csrf 的安全性依赖"跨站无法附带自定义头"
-- [ ] A5 token 不入日志：服务端日志 / 客户端 debug_log / debug_elapsed 输出
-- [ ] A6 注入面：deviceName 入库、服务器地址拼 URL、歌名渲染——无 XSS/注入
+- [x] A1 三处范围一致性走查：预判的 player 路由缺口**不存在**——
+      player.ts:47 `router.use("/:botId", requireBotAccess("botId"))` 统一
+      403（防 404 探测）；REST bot 列表按 `u.bots` 过滤；WS 由 server.ts:396
+      botScope 握手盖章 + websocket.ts visibleToClient 过滤 init/广播。
+      三处同一权限上下文，一致
+- [x] A2 权限收窄时效：member 的 botScope 仅在 WS 升级时盖章，无 live
+      re-scope（guest 有 refreshGuestPolicy 实时刷新/关闭）。管理员收窄
+      member 的 bot 白名单后，**已建立的 WS 连接保留旧 scope 直至断开**
+      （桌面端长连接，最坏数小时）；REST 逐请求校验不受影响。记录为已知
+      取舍，P1 可比照 guest 做成员断连
+- [x] A3 token 五条失效路径全部有实现+测试：TTL 过期（client-auth.test:136）、
+      DELETE /session（client-auth.test:103/119）、改密码（session.ts:235
+      deleteAllForUser + session.test:144）、管理员重置（users.ts:128）、
+      删除用户（users.ts:93）
+- [x] A4 CORS 缺席论证：Bearer 走 `Authorization` 自定义头，非环境凭据——
+      跨站页面无法附带（设自定义头需 CORS 预审批，服务端不授权）；cookie
+      路径有 SameSite=Lax + 变更方法 csrfOriginCheck；浏览器 WebSocket API
+      不能设自定义头，跨站 WS 只能依赖 cookie → 被 SameSite=Lax 阻断
+- [x] A5 token 不入日志：服务端仅记 userId/username/device（client.ts:58），
+      WS 升级只存 hashToken（server.ts:369），无请求头日志中间件；客户端
+      debug_log 仅枚举/数值（handshake err/close code/outcome），且 debug
+      构建独占、release 为 no-op；debug_elapsed 只输出时间数值
+- [x] A6 注入面：deviceName 预编译 SQL + 64 字符截断（client.ts:55）；
+      两前端无 dangerouslySetInnerHTML/innerHTML（React 文本节点自动转义，
+      R3 的 501 HTML 错误文案实测为转义纯文本渲染）；服务器地址经
+      normalize_base_url/ws_url 归一（kugou id 走 percent-encoding）；
+      deviceName 进 pino 日志被 JSON 编码，无日志注入
 
 ### R 可靠性
-- [ ] R1 三任务状态机穷举：登出→登录快速交替、服务器时好时坏，无 busy-loop
-- [ ] R2 半开连接（服务器断电无 Close 帧）：客户端缺死连接检测（预判缺失，
-      指示灯说谎）——补"无帧 60s 判死"逻辑
-- [ ] R3 异常路径：超时/连接重置/DNS 失败/非 JSON 响应（反代错误页）降级
-- [ ] R4 数据边界：lineIndex 越界、空歌词、负 elapsed、超大 duration
-- [ ] R5 生命周期：挂起/恢复、改系统时间、快速切歌×10、活跃 bot 被删、
-      显示器拔除位置恢复
+- [x] R1 状态机实测：登出→登录 UI 交替 4+ 次（ bots/锚点/歌词全清后干净
+      重建，无跨会话残留）；服务器杀/重启 2 轮 + 半开断开/恢复 1 轮——
+      指示灯诚实切换 已连接↔重连中，无崩溃无 busy-loop（ws 退避 1s→30s
+      封顶、poller/ticker 停车矩阵结构性排除空转）
+- [x] R2 半开连接：已实现"无帧 60s 判死"（ws.rs `WS_MAX_SILENCE_SECS`，
+      每次读帧带超时，任何入站帧重置；服务端 25s 心跳下健康连接不误杀）。
+      运行时验证：TCP 代理模拟静默 → ~60s 后指示灯 已连接→重连中（不再
+      说谎）→ 解除静默 ~20s 内自动恢复已连接
+- [x] R3 异常路径：连接拒绝（后端全下线）→ 指示灯重连中、UI 完整可操作、
+      无崩溃；非 JSON（python http.server 501 HTML 页）→ 登录优雅显示
+      "服务器错误 501: <上游原文截断>"；连接重置走 Interrupted 同一退避
+      路径；HTTP 超时 10s 连接/20s 请求（http.rs）。小瑕疵记录：错误文案
+      透传上游 HTML 原文，后续可截断/泛化
+- [x] R4 数据边界：E3 proptest + 单测覆盖——find_line 越界下标/空歌词/NaN
+      查询（不 panic、None 正确）、interpolate 负 elapsed/NaN/Inf 归零/
+      max_duration 钳制（timing.rs 单测 + 属性测试）
+- [~] R5 生命周期：改系统时间——锚点用 Instant 单调时钟免疫（代码论证），
+      token 过期按系统时间（语义正确）；活跃 bot 被删——WS botRemoved →
+      remove_bot → wake → 占位（代码路径 + ws 解析单测）；快速切歌——
+      key_changed→抖动/缓存/代数守卫路径由单测+集成覆盖，未做 ×10 实测；
+      显示器拔除——restore_position 缺失显示器时钳回主屏（代码在，未实测）；
+      挂起/恢复——deadline 单发结构无 busy-loop（未实测）。→ 硬件类场景
+      留待真机按需补验
 
 ## 四、已知取舍（记录在案，不处理）
 
