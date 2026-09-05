@@ -1,8 +1,47 @@
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use crate::events;
 use crate::state::SharedState;
 use crate::types::{song_key, BotStatus, LyricLine};
+
+/// 歌词缓存容量（LRU）：反复切回热门歌命中缓存；上限防无界增长。
+/// 20 首 × 数 KB/首，内存代价可忽略。
+pub const LYRICS_CACHE_CAP: usize = 20;
+
+/// 歌词行 LRU 缓存：map 存数据，order 记访问序（尾部 = 最近使用）。
+/// 容量小，O(n) 触碰即可，不值得引依赖。
+pub struct LyricsCache {
+    map: HashMap<String, Arc<Vec<LyricLine>>>,
+    order: VecDeque<String>,
+}
+
+impl LyricsCache {
+    pub fn new() -> Self {
+        Self { map: HashMap::new(), order: VecDeque::new() }
+    }
+
+    pub fn get(&mut self, key: &str) -> Option<Arc<Vec<LyricLine>>> {
+        let hit = self.map.get(key)?.clone();
+        self.touch(key.to_string());
+        Some(hit)
+    }
+
+    pub fn insert(&mut self, key: String, lines: Arc<Vec<LyricLine>>) {
+        if self.map.len() >= LYRICS_CACHE_CAP && !self.map.contains_key(&key) {
+            if let Some(oldest) = self.order.pop_front() {
+                self.map.remove(&oldest);
+            }
+        }
+        self.map.insert(key.clone(), lines);
+        self.touch(key);
+    }
+
+    fn touch(&mut self, key: String) {
+        self.order.retain(|k| *k != key);
+        self.order.push_back(key);
+    }
+}
 
 /// 行查找（纯函数）：返回最后一个 time <= t 的行下标。后端已按 time 升序。
 /// 二分 partition_point：lines[n-1].time <= t < lines[n].time。
@@ -24,7 +63,7 @@ pub async fn ensure_lyrics(app: &tauri::AppHandle, state: &SharedState, status: 
     let key = song_key(song);
 
     if let Some(cached) = state.lyrics_cache.lock().await.get(&key) {
-        events::emit_lyrics_data_lines(app, state, &status.id, &key, cached.clone());
+        events::emit_lyrics_data_lines(app, state, &status.id, &key, cached);
         return;
     }
 
@@ -48,6 +87,14 @@ async fn fetch_store_emit(
     };
     events::emit_lyrics_data(app, state, &status.id, key, events::LyricsPhase::Loading);
 
+    // 多客户端对同一 bot 同歌切歌会同时打到后端/上游：0–1.5s 随机抖动错峰
+    //（礼貌性代价：未命中缓存的首次拉取晚 ≤1.5s；时钟纳秒做抖动源，零依赖）
+    let jitter_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| u64::from(d.subsec_nanos()) % 1500)
+        .unwrap_or(0);
+    tokio::time::sleep(std::time::Duration::from_millis(jitter_ms)).await;
+
     let song = status.current_song.as_ref().expect("caller ensures current_song");
     let fetched = {
         let Some((base, token)) = state.creds().await else { return false };
@@ -62,13 +109,7 @@ async fn fetch_store_emit(
     match fetched {
         Ok(lines) if !lines.is_empty() => {
             let shared = Arc::new(lines);
-            let mut cache = state.lyrics_cache.lock().await;
-            // 粗略上限防无界增长（超过 200 首整体清空；歌单极少超过）
-            if cache.len() > 200 {
-                cache.clear();
-            }
-            cache.insert(key.to_string(), shared.clone());
-            drop(cache);
+            state.lyrics_cache.lock().await.insert(key.to_string(), shared.clone());
             events::emit_lyrics_data_lines(app, state, &status.id, key, shared);
             false
         }
@@ -141,5 +182,40 @@ mod tests {
         assert_eq!(find_line(&lines, t), Some(0));
         let t = 10.4 - 0.5; // 偏移后还没到
         assert_eq!(find_line(&lines, t), None);
+    }
+
+    fn put(cache: &mut LyricsCache, key: &str) {
+        cache.insert(key.to_string(), Arc::new(vec![line(1.0)]));
+    }
+
+    #[test]
+    fn lyrics_cache_lru_eviction_and_touch() {
+        let mut c = LyricsCache::new();
+        for i in 0..LYRICS_CACHE_CAP {
+            put(&mut c, &format!("k{i}"));
+        }
+        // 访问 k0 使其变为最近使用，再插入新条目：被逐出的是 k1
+        assert!(c.get("k0").is_some());
+        put(&mut c, "new");
+        assert!(c.get("k0").is_some(), "最近使用的 k0 不应被逐出");
+        assert!(c.get("k1").is_none(), "最久未用的 k1 应被逐出");
+        assert!(c.get("new").is_some());
+        // 容量不增长
+        assert_eq!(c.map.len(), LYRICS_CACHE_CAP);
+    }
+
+    #[test]
+    fn lyrics_cache_reinsert_updates_order() {
+        let mut c = LyricsCache::new();
+        for i in 0..LYRICS_CACHE_CAP {
+            put(&mut c, &format!("k{i}"));
+        }
+        // 重复插入已存在的 key：不触发逐出，只更新序
+        put(&mut c, "k0");
+        assert_eq!(c.map.len(), LYRICS_CACHE_CAP);
+        // 再挤进来一个新条目：被逐出的是复活前的 k1（而非 k0）
+        put(&mut c, "new");
+        assert!(c.get("k0").is_some(), "复活的 k0 不应被逐出");
+        assert!(c.get("k1").is_none());
     }
 }

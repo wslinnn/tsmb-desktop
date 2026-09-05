@@ -57,7 +57,8 @@ pub struct AppState {
     pub conn: RwLock<ConnSnapshot>,
     pub bots: RwLock<Vec<BotStatus>>,
     pub timings: Mutex<HashMap<String, TimingAnchor>>,
-    pub lyrics_cache: Mutex<HashMap<String, Arc<Vec<LyricLine>>>>,
+    /// 歌词行缓存（LRU 20 首，见 lyrics::LyricsCache）
+    pub lyrics_cache: Mutex<crate::lyrics::LyricsCache>,
     /// 每 bot 的歌词请求代数：切歌后旧响应作废。
     pub lyrics_gen: Mutex<HashMap<String, u64>>,
     /// 最近一次歌词数据快照：歌词窗口加载晚于广播时会错过 lyrics-data，
@@ -105,7 +106,7 @@ impl AppState {
             conn: RwLock::new(ConnSnapshot { ws: WsPhase::Closed, error: None }),
             bots: RwLock::new(Vec::new()),
             timings: Mutex::new(HashMap::new()),
-            lyrics_cache: Mutex::new(HashMap::new()),
+            lyrics_cache: Mutex::new(crate::lyrics::LyricsCache::new()),
             lyrics_gen: Mutex::new(HashMap::new()),
             last_lyrics: Mutex::new(None),
             last_tick: Mutex::new(None),

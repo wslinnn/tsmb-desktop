@@ -68,7 +68,13 @@ pub async fn run_poller(app: AppHandle, state: SharedState) {
 }
 
 async fn poll_interval_ms(state: &SharedState) -> u64 {
-    let Some(bot_id) = state.active_bot_id().await else { return 5000 };
+    // WS 开着：stateChange 是主通道，轮询降为纯兜底（他端 seek / 本地漂移），
+    // 15s 足够——这是对 VPS 的主要减负（基线：播放中曾固定 2s = 0.5 req/s）
+    if state.conn.read().await.ws == crate::state::WsPhase::Open {
+        return 15000;
+    }
+    // WS 断开：轮询是唯一数据通道；播放中 3s 快速自愈，其余 15s
+    let Some(bot_id) = state.active_bot_id().await else { return 15000 };
     let playing = state
         .bots
         .read()
@@ -77,7 +83,7 @@ async fn poll_interval_ms(state: &SharedState) -> u64 {
         .find(|b| b.id == bot_id)
         .map(|b| b.is_progressing())
         .unwrap_or(false);
-    if playing { 2000 } else { 15000 }
+    if playing { 3000 } else { 15000 }
 }
 
 /// 边界驱动 tick：算出下一行边界的到达时刻 → sleep_until min(边界, 1s 心跳)；
@@ -138,9 +144,9 @@ pub async fn run_ticker(app: AppHandle, state: SharedState) {
 
         let elapsed = a.render_elapsed();
         let t_eff = elapsed - offset_ms as f64 / 1000.0;
-        // 行索引与下一行边界共用一次缓存读取
+        // 行索引与下一行边界共用一次缓存读取（get 会触碰 LRU 序）
         let lines = match a.song_key.as_deref() {
-            Some(k) => state.lyrics_cache.lock().await.get(k).cloned(),
+            Some(k) => state.lyrics_cache.lock().await.get(k),
             None => None,
         };
         let (line_index, next_index, boundary_ms) = match lines.as_deref() {
