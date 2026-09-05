@@ -81,12 +81,17 @@ pub async fn logout(app: AppHandle, state: State<'_, SharedState>) -> Result<(),
 /// 同时清空会话期内存状态（bots/锚点/歌词），不留跨账号残留。
 pub async fn force_logout(app: &AppHandle, state: &SharedState, reason: &str) {
     debug_log(&format!("force_logout: {reason}"));
-    {
+    // 登出即回到干净桌面：顺带清歌词启用偏好（否则残留一块冻结歌词的透明
+    // 置顶窗，且下次启动登录前就会弹出一个空歌词窗）。
+    let lyrics_was_enabled = {
         let mut s = state.settings.write().await;
         s.auth.token = None;
         s.auth.username = None;
+        let was = s.lyrics.enabled;
+        s.lyrics.enabled = false;
         save_settings(app, &s);
-    }
+        was
+    };
     *state.auth.write().await = AuthSnapshot {
         state: AuthPhase::LoggedOut,
         username: None,
@@ -98,6 +103,12 @@ pub async fn force_logout(app: &AppHandle, state: &SharedState, reason: &str) {
     state.timings.lock().await.clear();
     state.lyrics_gen.lock().await.clear();
     *state.last_lyrics.lock().await = None;
+    *state.last_tick.lock().await = None;
+    if lyrics_was_enabled {
+        crate::lyrics_window::close(app);
+        let settings = state.settings.read().await.clone();
+        events::emit_settings(app, &settings);
+    }
     let _ = state.auth_rev.send_modify(|n| *n += 1);
     state.wake_tick();
     events::emit_auth(app, &state.auth.read().await.clone());
@@ -134,6 +145,7 @@ pub async fn get_state(state: State<'_, SharedState>) -> Result<Value, String> {
     let bots = state.bots.read().await.clone();
     let settings = state.settings.read().await.clone();
     let last_lyrics = state.last_lyrics.lock().await.clone();
+    let last_tick = state.last_tick.lock().await.clone();
     Ok(serde_json::json!({
         "auth": auth,
         "connection": connection,
@@ -141,6 +153,7 @@ pub async fn get_state(state: State<'_, SharedState>) -> Result<Value, String> {
         "activeBotId": settings.active_bot_id,
         "settings": settings,
         "lyrics": last_lyrics,
+        "tick": last_tick,
     }))
 }
 
@@ -183,11 +196,10 @@ pub async fn update_lyrics_settings(
     if patch.get("fontSize").and_then(Value::as_f64).is_some() {
         crate::lyrics_window::resize_for_font_size(&app, merged.lyrics.font_size);
     }
-    // offset 变化改变行查找结果 → 唤醒 tick 重算（颜色/字号等由 settings-changed
-    // 驱动前端重渲染，不需要新 tick）
-    if patch.get("offsetMs").and_then(Value::as_i64).is_some() {
-        state.wake_tick();
-    }
+    // 任何歌词设置变化都唤醒 tick 重算：enabled 重新开启时解除停车并发首帧，
+    // offset 变化改变行查找结果；颜色/字号等由 settings-changed 驱动前端
+    // 重渲染，重复计算一次 tick 无害。
+    state.wake_tick();
 
     events::emit_settings(&app, &merged);
     Ok(())

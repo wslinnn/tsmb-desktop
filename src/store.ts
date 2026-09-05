@@ -79,5 +79,6 @@ export async function hydrate(): Promise<void> {
   s.setActiveBot(snap.activeBotId);
   s.setSettings(snap.settings);
   if (snap.lyrics) s.setLyrics(snap.lyrics);
+  if (snap.tick) s.setTick(snap.tick as TickEvent);
   useStore.setState({ hydrated: true });
 }

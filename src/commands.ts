@@ -20,6 +20,7 @@ export function getState(): Promise<{
   activeBotId: string | null;
   settings: Settings;
   lyrics: import("./types").LyricsDataEvent | null;
+  tick: import("./types").TickEvent | null;
 }> {
   return invoke("get_state");
 }

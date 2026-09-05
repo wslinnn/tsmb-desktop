@@ -110,7 +110,12 @@ pub fn emit_settings(app: &tauri::AppHandle, settings: &crate::settings::Setting
     let _ = app.emit("settings-changed", serde_json::json!({ "settings": settings }));
 }
 
-pub fn emit_tick(app: &tauri::AppHandle, tick: TickEvent) {
+pub fn emit_tick(app: &tauri::AppHandle, state: &SharedState, tick: TickEvent) {
+    // 水合快照：暂停态 ticker 停车后不再有周期 tick，晚加载的歌词窗
+    // 从 get_state 补水
+    if let Ok(mut slot) = state.last_tick.try_lock() {
+        *slot = Some(tick.clone());
+    }
     // 窗口不存在时 emit_to 无害（自动丢弃）
     let _ = app.emit_to("lyrics", "lyrics-tick", tick);
 }

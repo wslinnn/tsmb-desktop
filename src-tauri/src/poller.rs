@@ -3,15 +3,30 @@ use tauri::AppHandle;
 use crate::lyrics::find_line;
 use crate::state::SharedState;
 
-/// elapsed 轮询（自愈通道）：活跃 bot 播放中 2s、暂停/停止 15s、未就绪 5s 空转。
+/// elapsed 轮询（自愈通道）：活跃 bot 播放中 2s、暂停/停止 15s。
 /// 兜住 WS 覆盖不到的三类场景：他端 seek（M1 后已补 stateChange，这里是兜底）、
 /// WS 断线期间、本地时钟累计漂移。
+/// 停车矩阵：登出（等 auth_rev）/ 无活跃 bot（等 tick_wake）时零周期唤醒。
 pub async fn run_poller(app: AppHandle, state: SharedState) {
+    let mut auth_rx = state.auth_rev.subscribe();
     loop {
+        if !state.is_logged_in().await {
+            if auth_rx.changed().await.is_err() {
+                return;
+            }
+            continue;
+        }
+        let Some(bot_id) = state.active_bot_id().await else {
+            // select_bot / WS init（带来 bot 列表）都会 wake_tick
+            state.tick_wake.notified().await;
+            continue;
+        };
+        let Some((base, token)) = state.creds().await else {
+            // 已登录但服务器地址为空（半配置）：慢速空转即可
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            continue;
+        };
         tokio::time::sleep(std::time::Duration::from_millis(poll_interval_ms(&state).await)).await;
-
-        let Some(bot_id) = state.active_bot_id().await else { continue };
-        let Some((base, token)) = state.creds().await else { continue };
 
         match crate::api::get_elapsed(&state.http, &base, &token, &bot_id).await {
             Ok(info) => {
@@ -82,6 +97,13 @@ pub async fn run_ticker(app: AppHandle, state: SharedState) {
             last = None; // 重新登录后强制重发一次
             continue;
         }
+        // 歌词窗未开启（enabled=false 即窗口不存在）：发射只是空投，停车等
+        // 设置变更（update_lyrics_settings 会 wake_tick）；重开时强制重发
+        if !state.settings.read().await.lyrics.enabled {
+            last = None;
+            state.tick_wake.notified().await;
+            continue;
+        }
 
         let bot_id = state.active_bot_id().await;
         let offset_ms = state.settings.read().await.lyrics.offset_ms;
@@ -96,6 +118,7 @@ pub async fn run_ticker(app: AppHandle, state: SharedState) {
             if last.as_ref() != Some(&sig) {
                 crate::events::emit_tick(
                     &app,
+                    &state,
                     crate::events::TickEvent {
                         bot_id: bot_id.unwrap_or_default(),
                         song_key: String::new(),
@@ -133,6 +156,7 @@ pub async fn run_ticker(app: AppHandle, state: SharedState) {
         if last.as_ref() != Some(&sig) {
             crate::events::emit_tick(
                 &app,
+                &state,
                 crate::events::TickEvent {
                     bot_id: bot_id.unwrap_or_default(),
                     song_key: sig.1.clone(),

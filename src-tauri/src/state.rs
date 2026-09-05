@@ -63,6 +63,9 @@ pub struct AppState {
     /// 最近一次歌词数据快照：歌词窗口加载晚于广播时会错过 lyrics-data，
     /// get_state 里补发（水合契约的一部分）。
     pub last_lyrics: Mutex<Option<crate::events::LyricsDataEvent>>,
+    /// 最近一次 tick 快照：同理——暂停态下 ticker 停车，不再有周期 tick，
+    /// 晚加载/重建的歌词窗只能从 get_state 补水。
+    pub last_tick: Mutex<Option<crate::events::TickEvent>>,
     /// 登录态版本号：login/logout/watch 驱动 ws 任务重连。
     pub auth_rev: tokio::sync::watch::Sender<u64>,
     /// tick 任务唤醒信号：WS 事件 / 轮询锚点刷新 / 设置变更时 notify_one。
@@ -105,6 +108,7 @@ impl AppState {
             lyrics_cache: Mutex::new(HashMap::new()),
             lyrics_gen: Mutex::new(HashMap::new()),
             last_lyrics: Mutex::new(None),
+            last_tick: Mutex::new(None),
             auth_rev,
             tick_wake: std::sync::Arc::new(tokio::sync::Notify::new()),
         }
