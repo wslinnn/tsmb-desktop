@@ -1,13 +1,18 @@
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+pub mod api;
+pub mod commands;
+pub mod events;
+pub mod http;
+pub mod lyrics;
+pub mod poller;
+pub mod settings;
+pub mod state;
+pub mod timing;
+pub mod types;
+pub mod ws;
 
-/// M0 四件套验证命令：锁定 = 鼠标穿透。M4 会并入 lyrics_window 模块。
-#[tauri::command]
-fn toggle_lyrics_lock(app: AppHandle, locked: bool) -> Result<(), String> {
-    if let Some(win) = app.get_webview_window("lyrics") {
-        win.set_ignore_cursor_events(locked).map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
+use std::sync::Arc;
+
+use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -21,9 +26,30 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![toggle_lyrics_lock])
+        .invoke_handler(tauri::generate_handler![
+            commands::login,
+            commands::logout,
+            commands::select_bot,
+            commands::get_state,
+            commands::update_lyrics_settings,
+            commands::set_lyrics_enabled,
+            commands::set_lyrics_locked,
+            commands::debug_elapsed,
+        ])
         .setup(|app| {
-            create_lyrics_window(app.handle())?;
+            let loaded = settings::load_settings(app.handle());
+            let lyrics_enabled = loaded.lyrics.enabled;
+            let lyrics_locked = loaded.lyrics.locked;
+            let state = Arc::new(state::AppState::new(loaded));
+            app.manage(state.clone());
+
+            tauri::async_runtime::spawn(ws::run_ws(app.handle().clone(), state.clone()));
+            tauri::async_runtime::spawn(poller::run_poller(app.handle().clone(), state.clone()));
+            tauri::async_runtime::spawn(poller::run_ticker(app.handle().clone(), state.clone()));
+
+            if lyrics_enabled {
+                create_lyrics_window(app.handle(), lyrics_locked)?;
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -51,7 +77,7 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
-fn create_lyrics_window(app: &AppHandle) -> tauri::Result<()> {
+fn create_lyrics_window(app: &AppHandle, locked: bool) -> tauri::Result<()> {
     if app.get_webview_window("lyrics").is_some() {
         return Ok(());
     }
@@ -67,7 +93,6 @@ fn create_lyrics_window(app: &AppHandle) -> tauri::Result<()> {
         .focusable(false) // 点击/拖动不抢前台焦点（游戏场景关键）
         .inner_size(900.0, 110.0)
         .build()?;
-    // 默认锁定（穿透）；M4 起从持久化设置恢复
-    win.set_ignore_cursor_events(true)?;
+    win.set_ignore_cursor_events(locked)?;
     Ok(())
 }

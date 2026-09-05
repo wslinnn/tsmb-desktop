@@ -6,7 +6,7 @@ export default function MainWindow() {
 
   const toggle = async () => {
     const next = !locked;
-    await invoke("toggle_lyrics_lock", { locked: next });
+    await invoke("set_lyrics_locked", { locked: next });
     setLocked(next);
   };
 
