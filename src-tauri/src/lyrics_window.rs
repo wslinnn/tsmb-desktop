@@ -45,7 +45,7 @@ pub fn close(app: &AppHandle) {
 }
 
 /// 拖动/创建后的位置持久化（防抖 500ms 读最新值）。
-pub fn schedule_geometry_save(app: &AppHandle, x: i32, y: i32) {
+pub fn schedule_geometry_save(app: &AppHandle) {
     if GEO_SAVE_PENDING.swap(true, Ordering::Relaxed) {
         return;
     }

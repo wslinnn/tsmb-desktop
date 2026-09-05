@@ -28,22 +28,35 @@ pub async fn ensure_lyrics(app: &tauri::AppHandle, state: &SharedState, status: 
         return;
     }
 
+    if fetch_store_emit(app, state, status, &key).await {
+        spawn_retry(app, state, status);
+    }
+}
+
+/// 拉取 + 代数守卫 + 入缓存 + 发结果。返回 true = 网络失败（调用方可安排重试）。
+async fn fetch_store_emit(
+    app: &tauri::AppHandle,
+    state: &SharedState,
+    status: &BotStatus,
+    key: &str,
+) -> bool {
     let gen = {
         let mut gens = state.lyrics_gen.lock().await;
         let g = gens.get(&status.id).copied().unwrap_or(0) + 1;
         gens.insert(status.id.clone(), g);
         g
     };
-    events::emit_lyrics_data(app, state, &status.id, &key, events::LyricsPhase::Loading);
+    events::emit_lyrics_data(app, state, &status.id, key, events::LyricsPhase::Loading);
 
+    let song = status.current_song.as_ref().expect("caller ensures current_song");
     let fetched = {
-        let Some((base, token)) = state.creds().await else { return };
+        let Some((base, token)) = state.creds().await else { return false };
         crate::api::get_lyrics(&state.http, &base, &token, &song.platform, &song.id).await
     };
 
     // 守卫：期间又切歌了就丢弃
     if state.lyrics_gen.lock().await.get(&status.id).copied() != Some(gen) {
-        return;
+        return false;
     }
 
     match fetched {
@@ -54,14 +67,51 @@ pub async fn ensure_lyrics(app: &tauri::AppHandle, state: &SharedState, status: 
             if cache.len() > 200 {
                 cache.clear();
             }
-            cache.insert(key.clone(), shared.clone());
+            cache.insert(key.to_string(), shared.clone());
             drop(cache);
-            events::emit_lyrics_data_lines(app, state, &status.id, &key, shared);
+            events::emit_lyrics_data_lines(app, state, &status.id, key, shared);
+            false
         }
-        Ok(_) => events::emit_lyrics_data(app, state, &status.id, &key, events::LyricsPhase::None),
+        Ok(_) => {
+            events::emit_lyrics_data(app, state, &status.id, key, events::LyricsPhase::None);
+            false
+        }
         // 网络失败：不缓存（下次切回该曲重试），发 None 让前端显示歌名占位
-        Err(_) => events::emit_lyrics_data(app, state, &status.id, &key, events::LyricsPhase::None),
+        Err(_) => {
+            events::emit_lyrics_data(app, state, &status.id, key, events::LyricsPhase::None);
+            true
+        }
     }
+}
+
+/// 网络失败后的延时重试：30s 后若仍是这首且仍是活跃 bot，重拉一次。
+/// 注意独立于 ensure_lyrics 调用，避免 async 递归导致的 Send 循环。
+fn spawn_retry(app: &tauri::AppHandle, state: &SharedState, status: &BotStatus) {
+    let app2 = app.clone();
+    let state2 = state.clone();
+    let bot2 = status.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        let still_active = state2.active_bot_id().await.as_deref() == Some(bot2.id.as_str());
+        // 先克隆再判断，读守卫不得跨 await（非 Send + 潜在死锁）
+        let cur = state2
+            .bots
+            .read()
+            .await
+            .iter()
+            .find(|b| b.id == bot2.id)
+            .cloned();
+        let still_same_song = cur
+            .as_ref()
+            .and_then(|b| b.current_song.as_ref().map(song_key))
+            == bot2.current_song.as_ref().map(song_key);
+        if still_active && still_same_song {
+            if let (Some(cur), Some(song)) = (cur, bot2.current_song.as_ref()) {
+                let key = song_key(song);
+                fetch_store_emit(&app2, &state2, &cur, &key).await;
+            }
+        }
+    });
 }
 
 /// 供 tick 计算用：取某 songKey 的缓存行。

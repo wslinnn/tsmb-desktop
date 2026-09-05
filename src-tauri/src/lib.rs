@@ -83,8 +83,8 @@ pub fn run() {
                     _ => {}
                 },
                 // 位置记忆：拖动结束后落盘（防抖）
-                WindowEvent::Moved(pos) if window.label() == "lyrics" => {
-                    lyrics_window::schedule_geometry_save(app, pos.x, pos.y);
+                WindowEvent::Moved(_pos) if window.label() == "lyrics" => {
+                    lyrics_window::schedule_geometry_save(app);
                 }
                 _ => {}
             }
