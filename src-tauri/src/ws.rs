@@ -4,6 +4,10 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::state::{SharedState, WsPhase};
 use crate::types::BotStatus;
 
+/// R2 半开连接判定：入站帧静默超过该秒数视为连接已死。服务端心跳 25s，
+/// 留 2 倍以上余量；健康连接任一帧（含 ping）都会重置计时，不会误杀。
+const WS_MAX_SILENCE_SECS: u64 = 60;
+
 /// WS 服务端消息（纯解析，可单测）。favoritesChanged 等忽略。
 #[derive(Clone, Debug, PartialEq)]
 pub enum WsEvent {
@@ -132,18 +136,35 @@ async fn connect_and_stream(
     set_conn(app, state, WsPhase::Open, None).await;
     let (mut sink, mut stream) = stream.split();
 
-    while let Some(msg) = stream.next().await {
+    loop {
+        // R2：每次读帧带 60s 超时——任何入站帧（含 ping/pong/数据）都会重置；
+        // 静默超限即判定半开连接（服务器断电无 Close 帧的场景），走退避重连。
+        let next = tokio::time::timeout(
+            std::time::Duration::from_secs(WS_MAX_SILENCE_SECS),
+            stream.next(),
+        )
+        .await;
+        let msg = match next {
+            Err(_) => {
+                let m = format!("{WS_MAX_SILENCE_SECS} 秒未收到服务端任何帧，判定连接已死");
+                crate::commands::debug_log(&format!("ws half-open: {m}"));
+                return StreamOutcome::Interrupted(m);
+            }
+            Ok(None) => return StreamOutcome::Interrupted("连接中断".into()),
+            Ok(Some(Err(e))) => return StreamOutcome::Interrupted(e.to_string()),
+            Ok(Some(Ok(m))) => m,
+        };
         match msg {
-            Ok(Message::Text(text)) => {
+            Message::Text(text) => {
                 if let Some(event) = parse_ws_message(&text) {
                     apply_ws_event(app, state, event).await;
                 }
             }
-            Ok(Message::Ping(payload)) => {
+            Message::Ping(payload) => {
                 // 服务端 25s ping：必须回 Pong，否则两轮后连接被 terminate
                 let _ = sink.send(Message::Pong(payload)).await;
             }
-            Ok(Message::Close(frame)) => {
+            Message::Close(frame) => {
                 let code = frame.as_ref().map(|f| u16::from(f.code)).unwrap_or(0);
                 crate::commands::debug_log(&format!("ws close code={code}"));
                 return match code {
@@ -151,14 +172,12 @@ async fn connect_and_stream(
                     _ => StreamOutcome::Interrupted("连接被服务端关闭".into()),
                 };
             }
-            Ok(_) => {}
-            Err(e) => return StreamOutcome::Interrupted(e.to_string()),
+            _ => {}
         }
         if !state.is_logged_in().await {
             return StreamOutcome::LoggedOut;
         }
     }
-    StreamOutcome::Interrupted("连接中断".into())
 }
 
 async fn apply_ws_event(app: &tauri::AppHandle, state: &SharedState, event: WsEvent) {
