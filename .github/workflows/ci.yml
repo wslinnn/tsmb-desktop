@@ -1,0 +1,33 @@
+# 质量门：push / PR 跑前端构建（tsc + vite）与 Rust 单测。
+# cargo 代码生成需要 dist/ 存在，所以先构建前端再 cargo test。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 前端构建（tsc + vite）
+        run: npm run build
+
+      - name: Rust 测试
+        working-directory: src-tauri
+        run: cargo test

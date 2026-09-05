@@ -1,0 +1,71 @@
+# 发版：推送 v* 形式的 tag 触发。校验 tag 与 tauri.conf.json 版本一致后
+# 构建（tsc + vite + tauri build），把 NSIS 安装包 + 免安装绿色版 exe
+# 发布到 GitHub Release。发布说明取自 .github/releases/<tag>.md，缺省自动生成。
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 校验 tag 与 tauri.conf.json 版本一致
+        shell: bash
+        run: |
+          TAG_VER="${GITHUB_REF_NAME#v}"
+          CFG_VER="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          if [ "$TAG_VER" != "$CFG_VER" ]; then
+            echo "::error::tag 版本 v$TAG_VER 与 src-tauri/tauri.conf.json 的 $CFG_VER 不一致"
+            exit 1
+          fi
+
+      - name: 构建（tsc + vite + tauri build）
+        run: npm run tauri build
+
+      - name: 整理发布产物
+        shell: bash
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          cp src-tauri/target/release/tsmb-desktop.exe "tsmb-desktop_${VER}_x64.exe"
+
+      - name: 发布 GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="$GITHUB_REF_NAME"
+          VER="${TAG#v}"
+          PORTABLE="tsmb-desktop_${VER}_x64.exe"
+          SETUP="src-tauri/target/release/bundle/nsis/tsmb-desktop_${VER}_x64-setup.exe"
+          NOTES_FILE=".github/releases/${TAG}.md"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" --clobber "$PORTABLE" "$SETUP"
+          else
+            ARGS=(--title "tsmb-desktop $TAG")
+            if [ -f "$NOTES_FILE" ]; then
+              ARGS+=(--notes-file "$NOTES_FILE")
+            else
+              ARGS+=(--generate-notes)
+            fi
+            gh release create "$TAG" "${ARGS[@]}" "$PORTABLE" "$SETUP"
+          fi

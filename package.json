@@ -1,7 +1,7 @@
 {
   "name": "tsmb-desktop",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "TeamSpeak 音乐机器人的桌面端伴侣应用：登录服务器、悬浮桌面歌词",
   "license": "MIT",
   "type": "module",

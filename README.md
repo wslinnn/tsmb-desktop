@@ -3,8 +3,9 @@
 TeamSpeak 音乐机器人（[teamspeak-music-bot](https://github.com/wslinnn/teamspeak-music-bot)）的桌面端伴侣应用：
 登录服务器、选择机器人，在桌面上悬浮显示实时滚动的歌词。
 
-Tauri 2 + React 19 + TypeScript，状态核心在 Rust（WS/轮询/锚点插值/歌词缓存），
-两个窗口（主窗口 + 桌面歌词）为纯视图。设计与协议见 [docs/](docs/)。
+Tauri 2 + React 19 + TypeScript，状态核心在 Rust（WS 连接、边界驱动轮询、锚点插值、
+内容缓存、托盘与穿透控制），两个窗口（主窗口 + 桌面歌词）为纯视图。
+设计与协议见 [docs/](docs/)。
 
 ## 功能
 
@@ -36,8 +37,11 @@ npm run tauri dev        # 需要一个后端：见下
 
 ```bash
 # teamspeak-music-bot 仓库
-npx tsx scripts/dev-server.mjs        # http://127.0.0.1:3999（alice / pw-alice-123）
+npx tsx scripts/dev-server.mjs            # http://127.0.0.1:3999（alice / pw-alice-123）
+PAUSED=1 npx tsx scripts/dev-server.mjs   # 启动即处于暂停态（调试暂停 / 恢复路径）
 ```
+
+假后端数据落在 `scripts/dev-bot.db`（`DEV_DB=<路径>` 可换），登录 token 重启后依然有效；删掉该文件即重置。
 
 测试：
 
@@ -47,18 +51,24 @@ cargo test                                             # 单测
 TSMB_DEV_SERVER=http://127.0.0.1:3999 cargo test --test integration   # 集成（需假后端在跑）
 ```
 
-## 打包
+## 打包与发版
 
 ```bash
-npm run tauri build     # 产出 NSIS 安装包 src-tauri/target/release/bundle/nsis/
+npm run tauri build     # NSIS 安装包：src-tauri/target/release/bundle/nsis/
+                        # 免安装绿色版：src-tauri/target/release/tsmb-desktop.exe
 ```
+
+推送 `v*` 形式的 tag（如 `v0.2.0`）会触发 [release workflow](.github/workflows/release.yml)：
+校验 tag 与 `src-tauri/tauri.conf.json` 的版本一致后自动构建，并把安装包 + 绿色版 exe
+发布到 GitHub Release——发布说明取自 `.github/releases/<tag>.md`，缺省自动生成。
+push / PR 由 [ci.yml](.github/workflows/ci.yml) 跑前端构建（tsc + vite）与 `cargo test`。
 
 ## 注意事项
 
 - **服务器版本要求**：需要 teamspeak-music-bot **v2.2.0+**（`/api/client` Bearer
   token 鉴权通道自该版本引入；seek 补发 stateChange 也在同版本）。
-- **公网部署必须 https**：v1 的 Bearer token 走 `Authorization` 头，明文 http 下
-  局域网内可见。家用局域网 http 可接受。
+- **公网部署必须 https**：Bearer token 走 `Authorization` 头，明文 http 下局域网内
+  可见。家用局域网 http 可接受。
 - **全屏独占游戏**中桌面歌词不可见（无边框窗口被独占模式覆盖，各音乐软件通病）；
   无边框/窗口化全屏正常。
 - **反向代理**需放行 `/ws` 升级连接及其 `Authorization` 头（如 nginx
