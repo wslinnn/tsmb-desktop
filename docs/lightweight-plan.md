@@ -65,9 +65,13 @@ utility 19.9 + crashpad 3 ≈ **284MB**。其中 WebView2 固定开销（browser
 各自的唤醒率必须趋零。现状：登出态 ticker 已门控但仍 10Hz 空醒。
 含 F1 修复：登出时关闭歌词窗并清 enabled（当前残留冻结帧，见基线 F1）。
 
-### T3 不可见不渲染 [ ]
-主窗隐藏（歌词-only 模式）时挂起其 WebView（WebView2 TrySuspend，评估
-Tauri v2 API 暴露方式），唤回时 resume；歌词窗销毁后 ticker 停车。
+### T3 不可见不渲染 [x]（评估结论：推迟，见下）
+- 歌词窗销毁后 ticker 停车：已由 T2 完成（enabled=false ⇔ 窗口不存在）。
+- 主窗隐藏挂起 WebView：**评估后推迟到 P2**。Tauri v2 无内置 suspend API；
+  WebView2 `TrySuspendAsync` 需 webview2-com unsafe COM + 在全部 3 个 show
+  路径（single-instance / 歌词窗关闭唤回 / 歌词控制条按钮）手动 Resume，
+  漏一处即白窗。收益 ~30MB（树私有内存 11%，基线 F2：隐藏后 renderer 不
+  挂起）。T1/T2 后隐藏主窗的增量 CPU 已近零，收益/风险比不划算。
 
 ### T4 网络自适应（对 VPS 友好）[ ]
 WS open → elapsed 轮询降为 15s 纯兜底；WS 断开 → 3s 快速自愈；暂停 → 15s。
