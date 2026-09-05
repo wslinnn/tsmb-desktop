@@ -65,6 +65,9 @@ pub struct AppState {
     pub last_lyrics: Mutex<Option<crate::events::LyricsDataEvent>>,
     /// 登录态版本号：login/logout/watch 驱动 ws 任务重连。
     pub auth_rev: tokio::sync::watch::Sender<u64>,
+    /// tick 任务唤醒信号：WS 事件 / 轮询锚点刷新 / 设置变更时 notify_one。
+    /// 边界驱动 tick（poller::run_ticker）靠它免掉周期空醒。
+    pub tick_wake: std::sync::Arc<tokio::sync::Notify>,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -103,7 +106,13 @@ impl AppState {
             lyrics_gen: Mutex::new(HashMap::new()),
             last_lyrics: Mutex::new(None),
             auth_rev,
+            tick_wake: std::sync::Arc::new(tokio::sync::Notify::new()),
         }
+    }
+
+    /// 唤醒 tick 任务重新计算（notify_one 的许可语义保证唤醒不丢）。
+    pub fn wake_tick(&self) {
+        self.tick_wake.notify_one();
     }
 
     pub async fn is_logged_in(&self) -> bool {

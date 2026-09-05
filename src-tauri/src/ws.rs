@@ -1,5 +1,4 @@
 use futures_util::{SinkExt, StreamExt};
-use tauri::Emitter;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::state::{SharedState, WsPhase};
@@ -170,11 +169,13 @@ async fn apply_ws_event(app: &tauri::AppHandle, state: &SharedState, event: WsEv
             state.replace_bots(bots).await;
             crate::events::emit_bots(app, state).await;
             maybe_fetch_active_lyrics(app, state);
+            state.wake_tick();
         }
         WsEvent::StateChange { status, .. } | WsEvent::BotConnected { status, .. }
         | WsEvent::BotDisconnected { status, .. } => {
             let (key_changed, _) = state.update_bot(status).await;
             crate::events::emit_bots(app, state).await;
+            state.wake_tick();
             if key_changed {
                 maybe_fetch_active_lyrics(app, state);
             }
@@ -182,6 +183,7 @@ async fn apply_ws_event(app: &tauri::AppHandle, state: &SharedState, event: WsEv
         WsEvent::BotRemoved { bot_id } => {
             state.remove_bot(&bot_id).await;
             crate::events::emit_bots(app, state).await;
+            state.wake_tick();
         }
         WsEvent::Other => {}
     }

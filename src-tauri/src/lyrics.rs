@@ -114,11 +114,6 @@ fn spawn_retry(app: &tauri::AppHandle, state: &SharedState, status: &BotStatus) 
     });
 }
 
-/// 供 tick 计算用：取某 songKey 的缓存行。
-pub async fn cached_lines(state: &SharedState, key: &str) -> Option<Arc<Vec<LyricLine>>> {
-    state.lyrics_cache.lock().await.get(key).cloned()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

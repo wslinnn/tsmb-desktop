@@ -3,9 +3,10 @@ import { hydrate, useStore } from "../../store";
 import { lineStyles } from "../../lyricsStyle";
 import ControlBar from "./ControlBar";
 
-/** 桌面歌词窗口：消费 lyrics-data（歌词行）+ lyrics-tick（10Hz 行索引）。
- *  双行规则：有翻译 → 「原文+翻译」；无翻译 → 「当前行+下一行」；
- *  无歌词/首行前/加载中 → 歌名占位。锁定态整窗穿透（Rust set_ignore_cursor_events）。 */
+/** 桌面歌词窗口：消费 lyrics-data（歌词行）+ lyrics-tick（行边界驱动，仅
+ *  行切换/切歌/暂停恢复时到达）。双行规则：有翻译 → 「原文+翻译」；
+ *  无翻译 → 「当前行+下一行」；无歌词/首行前/加载中 → 歌名占位。
+ *  锁定态整窗穿透（Rust set_ignore_cursor_events）。 */
 export default function LyricsWindow() {
   useEffect(() => {
     void hydrate();

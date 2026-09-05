@@ -99,6 +99,7 @@ pub async fn force_logout(app: &AppHandle, state: &SharedState, reason: &str) {
     state.lyrics_gen.lock().await.clear();
     *state.last_lyrics.lock().await = None;
     let _ = state.auth_rev.send_modify(|n| *n += 1);
+    state.wake_tick();
     events::emit_auth(app, &state.auth.read().await.clone());
     events::emit_conn(app, state).await;
 }
@@ -121,6 +122,7 @@ pub async fn select_bot(
     if let Some(status) = status {
         crate::lyrics::ensure_lyrics(&app, &state, &status).await;
     }
+    state.wake_tick();
     Ok(())
 }
 
@@ -180,6 +182,11 @@ pub async fn update_lyrics_settings(
     // fontSize 变化 → 保持底边调高度
     if patch.get("fontSize").and_then(Value::as_f64).is_some() {
         crate::lyrics_window::resize_for_font_size(&app, merged.lyrics.font_size);
+    }
+    // offset 变化改变行查找结果 → 唤醒 tick 重算（颜色/字号等由 settings-changed
+    // 驱动前端重渲染，不需要新 tick）
+    if patch.get("offsetMs").and_then(Value::as_i64).is_some() {
+        state.wake_tick();
     }
 
     events::emit_settings(&app, &merged);
