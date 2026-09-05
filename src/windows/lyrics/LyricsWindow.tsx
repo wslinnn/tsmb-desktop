@@ -39,11 +39,16 @@ export default function LyricsWindow() {
     } else if (tick.nextIndex != null) {
       sub = lyrics!.lines![tick.nextIndex].text;
     }
+  } else if (linesReady) {
+    // 歌词已就绪但还在第一行之前（前奏）：显示歌名 + 首行预览，
+    // 不能写"暂无歌词"——歌词明明存在
+    main = song ? `${song.title} — ${song.artist}` : "tsmb-desktop 桌面歌词";
+    sub = lyrics!.lines![0].text;
   } else if (lyrics?.state === "loading") {
     main = song ? `${song.title} — ${song.artist}` : "歌词加载中…";
     sub = "歌词加载中…";
   } else {
-    // none / 首行前 / 未播放
+    // 无歌词 / 未播放
     main = song ? song.title : "tsmb-desktop 桌面歌词";
     sub = song ? "暂无歌词" : "等待播放…";
   }

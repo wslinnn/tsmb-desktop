@@ -63,23 +63,27 @@ pub async fn run_ws(app: tauri::AppHandle, state: SharedState) {
             }
             let Some((base, token)) = state.creds().await else { break };
             eprintln!("[ws] connecting to {base}");
-            set_conn(&state, WsPhase::Connecting, None).await;
+            set_conn(&app, &state, WsPhase::Connecting, None).await;
             match connect_and_stream(&app, &state, &base, &token).await {
                 StreamOutcome::SessionExpired => {
                     crate::commands::debug_log("ws outcome: SessionExpired");
-                    crate::commands::force_logout(&app, &state, "登录已过期").await;
+                    // 主动登出时服务器也会以 4001 关闭 socket——那不是"会话过期"，
+                    // 不能覆盖已登出状态（reason 会被改成误导性的"登录已过期"）
+                    if state.is_logged_in().await {
+                        crate::commands::force_logout(&app, &state, "登录已过期").await;
+                    }
                     break;
                 }
                 StreamOutcome::LoggedOut => break,
                 StreamOutcome::Interrupted(e) => {
-                    set_conn(&state, WsPhase::Retrying, Some(e)).await;
+                    set_conn(&app, &state, WsPhase::Retrying, Some(e)).await;
                 }
             }
             let delay = std::cmp::min(30u64, 1u64 << attempt.min(5)) * 1000;
             attempt += 1;
             tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
         }
-        set_conn(&state, WsPhase::Closed, None).await;
+        set_conn(&app, &state, WsPhase::Closed, None).await;
         let _ = auth_rx.changed().await; // 等下一次登录态变更
     }
 }
@@ -126,8 +130,7 @@ async fn connect_and_stream(
         }
     };
     crate::commands::debug_log("ws open");
-    set_conn(state, WsPhase::Open, None).await;
-    let (mut sink, mut stream) = stream.split();
+    set_conn(app, state, WsPhase::Open, None).await;    let (mut sink, mut stream) = stream.split();
 
     while let Some(msg) = stream.next().await {
         match msg {
@@ -192,15 +195,15 @@ async fn maybe_fetch_active_lyrics(app: &tauri::AppHandle, state: &SharedState) 
     crate::lyrics::ensure_lyrics(app, state, &status).await;
 }
 
-async fn set_conn(state: &SharedState, phase: WsPhase, error: Option<String>) {
+/// 更新连接状态并广播（前端顶栏指示灯依赖这条事件流，不能只改状态不发射）。
+async fn set_conn(
+    app: &tauri::AppHandle,
+    state: &SharedState,
+    phase: WsPhase,
+    error: Option<String>,
+) {
     *state.conn.write().await = crate::state::ConnSnapshot::new(phase, error);
-    // events 由调用方统一发（避免 ws.rs 依赖 AppHandle 的发射顺序问题）
-}
-
-/// 供外部（force_logout 等）发连接状态事件。
-pub async fn emit_conn(app: &tauri::AppHandle, state: &SharedState) {
-    let snap = state.conn.read().await.clone();
-    let _ = app.emit("connection-state", &snap);
+    crate::events::emit_conn(app, state).await;
 }
 
 #[cfg(test)]

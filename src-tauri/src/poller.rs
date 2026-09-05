@@ -68,6 +68,10 @@ async fn poll_interval_ms(state: &SharedState) -> u64 {
 pub async fn run_ticker(app: AppHandle, state: SharedState) {
     loop {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // 登出后锚点是残留快照，继续 tick 会让歌词永远冻在最后一句
+        if !state.is_logged_in().await {
+            continue;
+        }
 
         let Some(bot_id) = state.active_bot_id().await else { continue };
         let Some(anchor) = state.timings.lock().await.get(&bot_id).cloned() else { continue };

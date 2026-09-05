@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { useStore } from "../../store";
 import { updateLyricsSettings } from "../../commands";
 import { outlineShadow } from "../../lyricsStyle";
@@ -19,12 +20,17 @@ const FONT_PRESETS = [
 export default function SettingsPanel() {
   const settings = useStore((s) => s.settings);
   const setSettings = useStore((s) => s.setSettings);
+  // 滑杆拖动时 onChange 每像素都触发：本地即时生效，后端按字段防抖落盘，
+  // 否则一次拖动写几十次 settings.json（fontSize 还会连带几十次窗口 resize）
+  const pending = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   if (!settings) return null;
   const ly = settings.lyrics;
 
   const patch = (p: Partial<LyricsSettings>) => {
     setSettings({ ...settings, lyrics: { ...ly, ...p } });
-    void updateLyricsSettings(p);
+    const key = Object.keys(p)[0];
+    clearTimeout(pending.current[key]);
+    pending.current[key] = setTimeout(() => void updateLyricsSettings(p), 250);
   };
 
   return (
