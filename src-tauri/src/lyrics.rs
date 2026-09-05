@@ -16,6 +16,12 @@ pub struct LyricsCache {
     order: VecDeque<String>,
 }
 
+impl Default for LyricsCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LyricsCache {
     pub fn new() -> Self {
         Self { map: HashMap::new(), order: VecDeque::new() }
@@ -158,6 +164,7 @@ fn spawn_retry(app: &tauri::AppHandle, state: &SharedState, status: &BotStatus) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn line(time: f64) -> LyricLine {
         LyricLine { time, ..Default::default() }
@@ -217,5 +224,46 @@ mod tests {
         put(&mut c, "new");
         assert!(c.get("k0").is_some(), "复活的 k0 不应被逐出");
         assert!(c.get("k1").is_none());
+    }
+
+    proptest! {
+        // E3 属性测试：行查找对任意非降时间轴与任意 t 不越界、语义正确
+        #[test]
+        fn prop_find_line_correct_and_in_bounds(
+            times in proptest::collection::vec(0.0f64..600.0, 0..40),
+            t in -10.0f64..700.0,
+        ) {
+            let mut sorted = times;
+            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let lines: Vec<LyricLine> = sorted.iter().map(|&time| line(time)).collect();
+            match find_line(&lines, t) {
+                None => {
+                    // 空轴或 t 在首行之前
+                    prop_assert!(lines.is_empty() || lines[0].time > t);
+                }
+                Some(i) => {
+                    prop_assert!(i < lines.len(), "下标不越界");
+                    prop_assert!(lines[i].time <= t, "当前行 time <= t");
+                    prop_assert!(
+                        i + 1 >= lines.len() || lines[i + 1].time > t,
+                        "下一行 time > t（归前一行语义）"
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn prop_find_line_nan_query_is_none(t in -5.0f64..5.0) {
+            let lines = vec![line(1.0), line(2.0)];
+            prop_assert_eq!(find_line(&lines, f64::NAN), None);
+            let expected = if t < 1.0 {
+                None
+            } else if t < 2.0 {
+                Some(0)
+            } else {
+                Some(1)
+            };
+            prop_assert_eq!(find_line(&lines, t), expected);
+        }
     }
 }

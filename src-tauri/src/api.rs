@@ -2,7 +2,6 @@ use crate::http::{check, encode_path_segment, AppResult};
 use crate::types::{BotStatus, ElapsedInfo, LoginResp, LyricLine};
 
 /// REST 封装。client/base/token 由调用方（AppState）提供。
-
 pub async fn login(
     client: &reqwest::Client,
     base: &str,

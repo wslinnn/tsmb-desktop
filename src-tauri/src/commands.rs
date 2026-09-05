@@ -54,7 +54,7 @@ pub async fn login(
         server: Some(base),
         reason: None,
     };
-    let _ = state.auth_rev.send_modify(|n| *n += 1);
+    state.auth_rev.send_modify(|n| *n += 1);
     events::emit_auth(&app, &state.auth.read().await.clone());
 
     // 不等 WS：立即拉一次 bot 列表（全量替换，别把上一账号的残留带给新用户）
@@ -109,7 +109,7 @@ pub async fn force_logout(app: &AppHandle, state: &SharedState, reason: &str) {
         let settings = state.settings.read().await.clone();
         events::emit_settings(app, &settings);
     }
-    let _ = state.auth_rev.send_modify(|n| *n += 1);
+    state.auth_rev.send_modify(|n| *n += 1);
     state.wake_tick();
     events::emit_auth(app, &state.auth.read().await.clone());
     events::emit_conn(app, state).await;

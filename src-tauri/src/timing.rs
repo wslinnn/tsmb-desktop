@@ -42,12 +42,16 @@ impl TimingAnchor {
 }
 
 /// 纯函数插值（可测）：播放中推进 + 钳制；暂停冻结在 server_elapsed。
+/// 非有限值（后端异常数据）归零：NaN 的比较恒 false 会永久毒化行查找。
 pub fn interpolate(
     server_elapsed: f64,
     since_sync: Duration,
     playing: bool,
     max_duration: Option<f64>,
 ) -> f64 {
+    if !server_elapsed.is_finite() {
+        return 0.0;
+    }
     if !playing {
         return clamp(server_elapsed, max_duration);
     }
@@ -71,6 +75,7 @@ fn max_duration(status: &BotStatus) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn paused_freezes_at_server_elapsed() {
@@ -118,5 +123,33 @@ mod tests {
         }))
         .unwrap();
         assert!(!TimingAnchor::from_status(&status).playing);
+    }
+
+    proptest! {
+        // E3 属性测试：插值单调、钳制、对任意输入不产生 NaN
+        #[test]
+        fn prop_interpolate_monotonic_and_finite(
+            server_elapsed in -1e6f64..1e6,
+            s0 in 0u64..3600,
+            ds in 0u64..3600,
+            playing in proptest::bool::ANY,
+            max in proptest::option::of(0.01f64..1e5),
+        ) {
+            let a = interpolate(server_elapsed, Duration::from_secs(s0), playing, max);
+            let b = interpolate(server_elapsed, Duration::from_secs(s0 + ds), playing, max);
+            prop_assert!(a.is_finite() && b.is_finite());
+            prop_assert!(b >= a, "播放推进单调不减: {a} -> {b}");
+            if let Some(m) = max.filter(|m| *m > 0.0) {
+                prop_assert!(a <= m && b <= m, "不超过 max_duration");
+            }
+        }
+
+        #[test]
+        fn prop_interpolate_non_finite_input_zeroed(
+            bad in proptest::prop_oneof![Just(f64::NAN), Just(f64::INFINITY), Just(f64::NEG_INFINITY)],
+            playing in proptest::bool::ANY,
+        ) {
+            prop_assert_eq!(interpolate(bad, Duration::from_secs(5), playing, Some(100.0)), 0.0);
+        }
     }
 }

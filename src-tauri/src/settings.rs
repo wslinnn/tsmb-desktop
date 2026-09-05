@@ -19,28 +19,20 @@ pub struct Settings {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
+#[derive(Default)]
 pub struct ServerSettings {
     pub base_url: String,
 }
 
-impl Default for ServerSettings {
-    fn default() -> Self {
-        Self { base_url: String::new() }
-    }
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
+#[derive(Default)]
 pub struct AuthSettings {
     pub token: Option<String>,
     pub username: Option<String>,
 }
 
-impl Default for AuthSettings {
-    fn default() -> Self {
-        Self { token: None, username: None }
-    }
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]

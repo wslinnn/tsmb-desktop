@@ -94,16 +94,13 @@ async fn ws_bearer_handshake_receives_init_and_state_change() {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
         let msg = tokio::time::timeout_at(deadline, ws.next()).await.expect("timeout").expect("closed").expect("err");
-        match msg {
-            tokio_tungstenite::tungstenite::Message::Text(t) => {
-                if let Some(tsmb_desktop_lib::ws::WsEvent::StateChange { status, .. }) =
-                    parse_ws_message(&t.to_string())
-                {
-                    assert!(status.elapsed >= 0.0);
-                    break;
-                }
+        if let tokio_tungstenite::tungstenite::Message::Text(t) = msg {
+            if let Some(tsmb_desktop_lib::ws::WsEvent::StateChange { status, .. }) =
+                parse_ws_message(t.as_ref())
+            {
+                assert!(status.elapsed >= 0.0);
+                break;
             }
-            _ => {}
         }
     }
     let _ = ws.close(None).await;

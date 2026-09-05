@@ -6,7 +6,7 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::settings::Settings;
 use crate::timing::TimingAnchor;
-use crate::types::{song_key, BotStatus, LyricLine};
+use crate::types::{song_key, BotStatus};
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
 #[serde(rename_all = "kebab-case")]
@@ -79,7 +79,7 @@ pub type SharedState = Arc<AppState>;
 impl AppState {
     pub fn new(settings: Settings) -> Self {
         let (auth_rev, _) = tokio::sync::watch::channel(0);
-        let has_token = settings.auth.token.as_deref().map_or(false, |t| !t.is_empty());
+        let has_token = settings.auth.token.as_deref().is_some_and(|t| !t.is_empty());
         // 乐观登录：有 token 即 LoggedIn，由 WS 4001 / REST 401 纠正
         //（服务器暂时不可达不应导致桌面端登出）。
         let auth = AuthSnapshot {

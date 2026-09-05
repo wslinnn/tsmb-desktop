@@ -33,4 +33,15 @@ percent-encoding = "2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
+proptest = "1"
+
+# T6 体积优化：strip 符号 + fat LTO + 单编译单元 + 体积优先 + panic 精简。
+# 代价：编译时间 35s → 数分钟；opt-level="s" 的运行时开销对本应用可忽略
+#（基线 CPU 0.03%，瓶颈是 WebView2 而非 Rust 代码）。
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+opt-level = "s"
+panic = "abort"
 
