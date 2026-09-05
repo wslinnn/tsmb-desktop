@@ -69,7 +69,7 @@ utility 19.9 + crashpad 3 ≈ **284MB**。其中 WebView2 固定开销（browser
 
 ## 二、优化项
 
-### T1 tick 边界驱动（核心）[ ]
+### T1 tick 边界驱动（核心）[x]
 - 现状：ticker 100ms 定时永久跑，10Hz 发事件（绝大多数 unchanged），驱动
   WebView2 10次/s 重渲染——99% 唤醒无信息量。
 - 目标：算出下一行边界时刻 → `sleep_until min(边界, 1s 兜底)`；仅
@@ -78,10 +78,11 @@ utility 19.9 + crashpad 3 ≈ **284MB**。其中 WebView2 固定开销（browser
   WS 事件 / 设置变更（offset/fontSize）立即唤醒。
 - 验收：行间期歌词面 CPU≈0；行切换时刻误差 <100ms；暂停零唤醒。
 
-### T2 停车矩阵 [ ]
+### T2 停车矩阵 [x]
 登出 / 歌词禁用 / 无活跃 bot / 暂停 四状态下，ws/poller/ticker 三任务
 各自的唤醒率必须趋零。现状：登出态 ticker 已门控但仍 10Hz 空醒。
-含 F1 修复：登出时关闭歌词窗并清 enabled（当前残留冻结帧，见基线 F1）。
+含 F1 修复：登出时关闭歌词窗并清 enabled（原残留冻结帧，见基线 F1）。
+实测对拍见「〇、基线实测」对比表：A 态 CPU 0.15%→0.02%，写入 9728→1205 ops/min。
 
 ### T3 不可见不渲染 [x]（评估结论：推迟，见下）
 - 歌词窗销毁后 ticker 停车：已由 T2 完成（enabled=false ⇔ 窗口不存在）。
@@ -103,12 +104,14 @@ WS open → elapsed 轮询降为 15s 纯兜底（0.5 → 0.07 req/s）；WS 断�
 release profile：`strip=true, lto=true, codegen-units=1, opt-level="s",
 panic="abort"`。exe 13.8MB → **4.78MB**；安装包 3.2MB → **1.87MB**。
 
-### T7 前端双入口分包（可选）[ ]
-main/lyrics 各自 chunk，互不加载对方代码（百 KB 级收益）。
+### T7 前端双入口分包 [x]（评估后跳过）
+实测单 chunk 仅 225KB（gzip 69KB），拆分只省另一窗口不执行代码的解析时间
+（百 KB 内），不值改动。保持单入口，两窗口按 label 分流渲染。
 
-### T8 磁盘 [ ]
-debug 日志（TEMP/tsmb-debug.log，仅 debug 构建）加 1MB 上限；
-测量 WebView2 用户数据目录（EBWebView）体积。
+### T8 磁盘 [~]
+EBWebView 实测 44MB（见基线节），稳态零增长，settings.json 稳态零写入。
+debug 日志（TEMP/tsmb-debug.log，仅 debug 构建）1MB 上限未做：release 为
+no-op，风险限于开发机，暂不加。
 
 ### T9 安全与工程化配套 [x]
 - S1 CSP：`csp: null` → `default-src 'self'` + Tauri IPC 白名单（全部
@@ -171,9 +174,12 @@ debug 日志（TEMP/tsmb-debug.log，仅 debug 构建）加 1MB 上限；
 
 已用足：Rust 状态核心（主窗关闭业务仍在）、serde 契约、单调时钟插值、
 透明穿透窗口五件套、tokio watch、single-instance、Arc 零拷贝缓存。
-本轮补齐（轻量化/安全）：T1-T8、S1/S2、L2、E3/E4。
+本轮完成（轻量化/安全）：T1/T2/T4/T5/T6 + S1/S2 + E3/E4。
+评估后未采纳/推迟：T3 推迟 P2（收益/风险比，见 T3 节）；T7 跳过（单
+bundle 仅 225KB，拆分收益太小）；L2 不采纳（理由见 T9）。
 P1 路线图：托盘（v2 内置 API）、autostart、global-shortcut、updater、
 tauri-specta 生成 TS 绑定（消灭手写双份契约）、IPC Channel（卡拉OK 60fps
-前置）、歌词 LRU。
-P2 记录：歌词面 Rust Direct2D 原生渲染（脱离 WebView2 的轻量化终局）、
+前置）。
+P2 记录：主窗隐藏 WebView 挂起（WebView2 TrySuspend，T3 评估结论）、
+歌词面 Rust Direct2D 原生渲染（脱离 WebView2 的轻量化终局）、
 真逐字歌词（需后端保留 KRC 逐字标签）。

@@ -46,8 +46,8 @@ tsmb-desktop/
    ├─ api.rs                     # REST：login/logout/me/bots/elapsed/lyrics
    ├─ ws.rs                      # WS：重连退避、Ping→Pong、消息解析、4001
    ├─ timing.rs                  # 锚点插值（纯逻辑，单测重点）
-   ├─ lyrics.rs                  # 歌词获取/缓存/代数守卫/行查找
-   ├─ poller.rs                  # 活跃 bot elapsed 轮询（2s/15s 自适应）
+   ├─ lyrics.rs                  # 歌词获取/LRU 缓存/拉取抖动/代数守卫/行查找
+   ├─ poller.rs                  # elapsed 兜底轮询（WS 感知 15s/3s）+ 边界驱动 tick
    ├─ events.rs                  # 事件 payload 定义与广播
    ├─ commands.rs                # invoke 命令
    ├─ lyrics_window.rs           # 歌词窗口创建/销毁/锁定/位置记忆
@@ -74,12 +74,12 @@ Rust 侧为 serde 镜像 struct；songKey 统一用 `` `${platform}:${id}` ``（
 
 | 事件 | 目标 | 频率 | payload |
 |---|---|---|---|
-| `auth-state` | 全部 | 变更时 | `{state:"logged-out"\|"logging-in"\|"logged-in", username?, server?}` |
+| `auth-state` | 全部 | 变更时 | `{state:"logged-out"\|"logged-in", username?, server?, reason?}` |
 | `connection-state` | 全部 | 变更时 | `{ws:"connecting"\|"open"\|"retrying"\|"closed", error?}` |
 | `bots-updated` | 全部 | 变更时 | `{bots: BotStatus[]}`（全量，规模小） |
 | `active-bot` | 全部 | 变更时 | `{botId: string \| null}` |
 | `lyrics-data` | 全部 | 切歌/切换活跃 bot | `{botId, songKey, state:"loading"\|"ok"\|"none", lines?: LyricLine[]}` |
-| `lyrics-tick` | lyrics 窗口 | 10Hz | 见下 |
+| `lyrics-tick` | lyrics 窗口 | 行边界驱动（见下） | 见下 |
 | `settings-changed` | 全部 | 变更时 | `{settings: LyricSettings}`（全量） |
 
 `lyrics-tick`：
@@ -94,21 +94,26 @@ Rust 侧为 serde 镜像 struct；songKey 统一用 `` `${platform}:${id}` ``（
 }
 ```
 
-- v1 前端直接消费 `elapsed` / `lineIndex` / `nextIndex`（10Hz 对行级显示足够）
-- `anchor` 字段为 P1 行内渐变本地插值预留：前端可算
-  `t = anchor.elapsed + (anchor.ageMs + 事件到达以来耗时)/1000`，协议一次定好不再动
+- 发射时机（T1 边界驱动）：仅 `(lineIndex, songKey, playing)` 变化时才发射；
+  播放中最多 1s 一次心跳兜锚点漂移；暂停/登出/歌词禁用/无锚点时停车
+  （无定时器，纯事件唤醒：WS 事件 / 轮询锚点刷新 / 设置变更 / 登录态变更）
+- 发射前写入 `last_tick` 快照：晚加载或重建的歌词窗从 `get_state` 补水
+  （暂停态停车后不再有周期 tick，这是唯一来源）
+- 前端只消费 `lineIndex` / `nextIndex` / `songKey`；`elapsed` / `anchor`
+  为 P1 行内渐变预留（当前无消费者）：`t = anchor.elapsed + (anchor.ageMs
+  + 事件到达以来耗时)/1000`，协议一次定好不再动
 
 ## 命令（前端 → Rust）
 
 | 命令 | 参数 | 说明 |
 |---|---|---|
-| `get_state` | — | `{auth, connection, bots, activeBotId, settings}`，窗口挂载时水合 |
+| `get_state` | — | `{auth, connection, bots, activeBotId, settings, lyrics, tick}`，窗口挂载时水合；后两项为最近一次快照，补齐晚加载/重建窗口 |
 | `login` | `{server, username, password}` | 存 token，随后拉 bots + 开 WS |
-| `logout` | — | 调后端撤销 + 清本地 + 广播 auth-state |
+| `logout` | — | 调后端撤销 + 清本地 + 关歌词窗（清 enabled）+ 广播 auth-state |
 | `select_bot` | `{botId}` | 切换活跃 bot（影响轮询与歌词窗口） |
 | `set_lyrics_enabled` | `{enabled}` | 创建/销毁歌词窗口 |
 | `set_lyrics_locked` | `{locked}` | `set_ignore_cursor_events` + 持久化 |
-| `update_lyrics_settings` | `{patch}` | 合并持久化 + 广播 settings-changed |
+| `update_lyrics_settings` | `{patch}` | 合并持久化 + 广播 settings-changed + 唤醒 tick（重开窗口/offset 变化依赖此唤醒） |
 
 ## 设置 schema（tauri-plugin-store）
 
@@ -130,17 +135,19 @@ Rust 侧为 serde 镜像 struct；songKey 统一用 `` `${platform}:${id}` ``（
 
 ## 关键流程
 
-1. **启动**：load settings → 有 token：`GET /api/me` 验证（401 则转 logged-out）→
-   并行 `GET /api/bot` + WS 连接；无 token：广播 logged-out，主窗口出登录页
+1. **启动**：load settings → 有 token：乐观置 logged-in，直接起 ws/poller/ticker
+  （不调 /api/me 验证；WS 4001 / REST 401 会强制登出纠正）；无 token：主窗口出登录页
 2. **登录**：`POST /api/client/login` → 存 token → 流程同上
-3. **切歌**：WS `stateChange` → songKey 变化 → 重置锚点 + `lyrics-data loading` →
-   fetch（代数守卫，旧响应丢弃）→ `ok`/`none`
-4. **他端 seek**：M1 落地 seek 补发 stateChange 后 → WS 即时收敛；
-   兜底仍是 poller ≤2s 硬同步
+3. **切歌**：WS `stateChange` → songKey 变化 → 重置锚点 + 唤醒 tick；歌词侧
+   LRU 缓存（20 首）命中直接发 `ok`，否则 `loading` → fetch（0–1.5s 随机抖动
+   错峰 + 代数守卫，旧响应丢弃）→ `ok`/`none`
+4. **他端 seek**：后端 seek 补发 stateChange → WS 即时收敛（唤醒 tick 重算锚点）；
+   WS 断开时 poller 播放中 3s 兜底硬同步
 5. **锁定**：`set_lyrics_locked` → `set_ignore_cursor_events(true)`；解锁态 hover 显示控制条
 6. **窗口关闭规则**：关主窗时歌词启用 → 隐藏主窗（应用存活）；否则退出应用。
    歌词窗关闭 → 销毁；主窗隐藏中则重新显示主窗。控制条「打开设置」= 显示主窗
-   （前端直接 `WebviewWindow.getByLabel("main").show()`，无需新命令）
+   （前端直接 `WebviewWindow.getByLabel("main").show()`，无需新命令）。
+   登出（主动或 401/4001 强制）→ 关闭歌词窗并清 enabled，回到干净桌面
 
 ## 实现要点（踩坑清单）
 
@@ -153,9 +160,15 @@ Rust 侧为 serde 镜像 struct；songKey 统一用 `` `${platform}:${id}` ``（
   或越界，夹回主屏工作区底部居中（默认位）
 - **窗口样式**：transparent 在 Windows/WebView2 可用；`shadow(false)` 避免默认投影穿帮；
   创建后单独调 `set_ignore_cursor_events`（按 locked 状态）
-- **tick 任务**：`tokio::time::interval(100ms)`，`emit_to("lyrics", ...)`；窗口不存在时
-  emit 无害（自动丢弃）
-- **插值**：`Instant` 单调时钟；`playing==false` 冻结；`elapsed` 钳制到
+- **tick 任务（T1 重写为边界驱动）**：算出下一行边界时刻 →
+  `sleep_until min(边界, 1s 心跳)`；仅 `(lineIndex, songKey, playing)` 变化才
+  `emit_to("lyrics", ...)`；播放中才有定时器，暂停/登出/歌词禁用/无锚点纯事件
+  停车（`state.tick_wake` Notify + `auth_rev` watch）；窗口不存在时 emit 无害
+  （自动丢弃）
+- **轮询任务**：WS open → 15s 纯兜底；WS 断开 → 播放中 3s、其余 15s；登出
+  停车等 auth_rev，无活跃 bot 停车等 tick_wake（登录/切 bot 唤醒）
+- **插值**：`Instant` 单调时钟；`playing==false` 冻结；非有限 elapsed 归零
+  （NaN 会永久毒化行查找）；`elapsed` 钳制到
   `effectiveDuration ?? currentSong.duration`；歌词行查找
   `t_eff = elapsed - offsetMs/1000` 后二分取最后一个 `time <= t_eff`
 - **reqwest**：rustls 特性；不启用 cookie store（手动 Bearer，无 cookie 语义）

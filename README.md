@@ -16,7 +16,8 @@ Tauri 2 + React 19 + TypeScript，状态核心在 Rust（WS/轮询/锚点插值/
   - 歌词偏移 ±0.5s 步进（只影响显示，不影响播放）
   - 锁定（鼠标穿透，游戏时可用）/ 解锁（悬浮控制条：锁定、关闭、字号、偏移、打开设置）
   - 拖动 + 位置记忆；字号变化保持底边不动调高度
-- 全部设置持久化；他端 seek 后歌词 ≤2s 收敛（后端 seek 已补发 stateChange）
+- 全部设置持久化；他端 seek 后歌词即时收敛（后端 seek 补发 stateChange；
+  WS 断开时播放中 3s 轮询兜底）
 
 ## 开发
 
@@ -61,5 +62,6 @@ npm run tauri build     # 产出 NSIS 安装包 src-tauri/target/release/bundle/
 ## 已知取舍（v1）
 
 - 关闭主窗口时若桌面歌词开启，主窗口只是隐藏（托盘为 P1）
+- 登出会关闭桌面歌词并清除启用开关（换取登出后的干净桌面），重新登录后需手动重新开启
 - token 存本地 settings.json（P1 迁 Windows 凭据管理器）
 - 游客登录、行内卡拉OK渐变、平滑追赶为 P1
