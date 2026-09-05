@@ -67,3 +67,7 @@ npm run tauri build     # 产出 NSIS 安装包 src-tauri/target/release/bundle/
 - 登出会关闭桌面歌词并清除启用开关（换取登出后的干净桌面），重新登录后需手动重新开启
 - token 存本地 settings.json（P1 迁 Windows 凭据管理器）
 - 游客登录、行内卡拉OK渐变、平滑追赶为 P1
+
+## License
+
+[MIT](LICENSE) © TSMusicBot Contributors —— 与 teamspeak-music-bot 主项目一致。
