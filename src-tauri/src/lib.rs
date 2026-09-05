@@ -70,11 +70,13 @@ pub fn run() {
                     }
                     "lyrics" => {
                         lyrics_window::save_geometry_now(app);
+                        // 主线程事件处理器：用 blocking_write（try_write 在
+                        // 与防抖落盘任务竞争失败时会静默丢掉 enabled=false，
+                        // 窗口关了下次启动却又出现）
                         let state = app.state::<state::SharedState>();
-                        if let Ok(mut s) = state.settings.try_write() {
-                            s.lyrics.enabled = false;
-                            settings::save_settings(app, &s);
-                        }
+                        let mut s = state.settings.blocking_write();
+                        s.lyrics.enabled = false;
+                        settings::save_settings(app, &s);
                         if let Some(main) = app.get_webview_window("main") {
                             let _ = main.show();
                             let _ = main.set_focus();

@@ -85,8 +85,15 @@ impl AppState {
             },
             reason: None,
         };
+        // 超时必须有：reqwest 默认无超时，服务器挂起时会无限卡死 poller、
+        // 歌词拉取乃至 WS 消息循环（Pong 饥饿 → 被服务端断连）
+        let http = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(20))
+            .build()
+            .expect("reqwest client build");
         Self {
-            http: reqwest::Client::new(),
+            http,
             settings: RwLock::new(settings),
             auth: RwLock::new(auth),
             conn: RwLock::new(ConnSnapshot { ws: WsPhase::Closed, error: None }),
@@ -139,5 +146,21 @@ impl AppState {
         self.timings.lock().await.remove(bot_id);
         self.lyrics_gen.lock().await.remove(bot_id);
         self.bots.write().await.retain(|b| b.id != bot_id);
+    }
+
+    /// WS init / 重新登录的全量快照：整体替换 bots 并同步锚点，
+    /// 清掉本次不可见的孤儿锚点/代数。update_bot 是增量合并，处理不了
+    /// 「快照里消失的 bot」——放任不管会跨账号残留前任用户可见的 bot。
+    pub async fn replace_bots(&self, fresh: Vec<BotStatus>) {
+        let mut timings = self.timings.lock().await;
+        for s in &fresh {
+            timings.insert(s.id.clone(), TimingAnchor::from_status(s));
+        }
+        let fresh_ids: std::collections::HashSet<String> =
+            fresh.iter().map(|b| b.id.clone()).collect();
+        timings.retain(|id, _| fresh_ids.contains(id));
+        drop(timings);
+        self.lyrics_gen.lock().await.retain(|id, _| fresh_ids.contains(id));
+        *self.bots.write().await = fresh;
     }
 }

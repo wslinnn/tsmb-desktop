@@ -130,7 +130,8 @@ async fn connect_and_stream(
         }
     };
     crate::commands::debug_log("ws open");
-    set_conn(app, state, WsPhase::Open, None).await;    let (mut sink, mut stream) = stream.split();
+    set_conn(app, state, WsPhase::Open, None).await;
+    let (mut sink, mut stream) = stream.split();
 
     while let Some(msg) = stream.next().await {
         match msg {
@@ -163,19 +164,19 @@ async fn connect_and_stream(
 
 async fn apply_ws_event(app: &tauri::AppHandle, state: &SharedState, event: WsEvent) {
     match event {
+        // init 是全量快照：整体替换（增量合并会让快照里消失的 bot 永久残留，
+        // 换账号登录后就是跨用户的数据泄漏）
         WsEvent::Init { bots } => {
-            for b in &bots {
-                state.update_bot(b.clone()).await;
-            }
+            state.replace_bots(bots).await;
             crate::events::emit_bots(app, state).await;
-            maybe_fetch_active_lyrics(app, state).await;
+            maybe_fetch_active_lyrics(app, state);
         }
         WsEvent::StateChange { status, .. } | WsEvent::BotConnected { status, .. }
         | WsEvent::BotDisconnected { status, .. } => {
             let (key_changed, _) = state.update_bot(status).await;
             crate::events::emit_bots(app, state).await;
             if key_changed {
-                maybe_fetch_active_lyrics(app, state).await;
+                maybe_fetch_active_lyrics(app, state);
             }
         }
         WsEvent::BotRemoved { bot_id } => {
@@ -187,12 +188,19 @@ async fn apply_ws_event(app: &tauri::AppHandle, state: &SharedState, event: WsEv
 }
 
 /// 活跃 bot 的歌词兜底拉取（切歌检测的触发点在 update_bot 的 key_changed）。
-async fn maybe_fetch_active_lyrics(app: &tauri::AppHandle, state: &SharedState) {
-    let Some(active) = state.active_bot_id().await else { return };
-    let Some(status) = state.bots.read().await.iter().find(|b| b.id == active).cloned() else {
-        return;
-    };
-    crate::lyrics::ensure_lyrics(app, state, &status).await;
+/// spawn 而非原地 await：歌词网络请求不得阻塞 WS 读循环（Pong 饥饿会被
+/// 服务端 25s 心跳判死）。
+fn maybe_fetch_active_lyrics(app: &tauri::AppHandle, state: &SharedState) {
+    let app = app.clone();
+    let state = state.clone();
+    tauri::async_runtime::spawn(async move {
+        let Some(active) = state.active_bot_id().await else { return };
+        // 先克隆再出守卫：bots.read() 不得跨 await
+        let status = state.bots.read().await.iter().find(|b| b.id == active).cloned();
+        if let Some(status) = status {
+            crate::lyrics::ensure_lyrics(&app, &state, &status).await;
+        }
+    });
 }
 
 /// 更新连接状态并广播（前端顶栏指示灯依赖这条事件流，不能只改状态不发射）。

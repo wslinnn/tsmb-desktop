@@ -57,12 +57,10 @@ pub async fn login(
     let _ = state.auth_rev.send_modify(|n| *n += 1);
     events::emit_auth(&app, &state.auth.read().await.clone());
 
-    // 不等 WS：立即拉一次 bot 列表（login 后 ws 也在连）
+    // 不等 WS：立即拉一次 bot 列表（全量替换，别把上一账号的残留带给新用户）
     if let Some((b, t)) = state.creds().await {
         if let Ok(bots) = crate::api::get_bots(&state.http, &b, &t).await {
-            for bot in &bots {
-                state.update_bot(bot.clone()).await;
-            }
+            state.replace_bots(bots).await;
             events::emit_bots(&app, &state).await;
         }
     }
@@ -80,6 +78,7 @@ pub async fn logout(app: AppHandle, state: State<'_, SharedState>) -> Result<(),
 }
 
 /// 401（REST）/ 4001（WS）统一走这里：清凭证、广播、打断 ws 循环。
+/// 同时清空会话期内存状态（bots/锚点/歌词），不留跨账号残留。
 pub async fn force_logout(app: &AppHandle, state: &SharedState, reason: &str) {
     debug_log(&format!("force_logout: {reason}"));
     {
@@ -95,6 +94,10 @@ pub async fn force_logout(app: &AppHandle, state: &SharedState, reason: &str) {
         reason: Some(reason.to_string()),
     };
     *state.conn.write().await = crate::state::ConnSnapshot::new(WsPhase::Closed, None);
+    state.bots.write().await.clear();
+    state.timings.lock().await.clear();
+    state.lyrics_gen.lock().await.clear();
+    *state.last_lyrics.lock().await = None;
     let _ = state.auth_rev.send_modify(|n| *n += 1);
     events::emit_auth(app, &state.auth.read().await.clone());
     events::emit_conn(app, state).await;
@@ -112,8 +115,10 @@ pub async fn select_bot(
         save_settings(&app, &s);
     }
     events::emit_active_bot(&app, Some(&bot_id));
-    // 歌词窗口立即拿到新活跃 bot 的歌词（缓存或拉取）
-    if let Some(status) = state.bots.read().await.iter().find(|b| b.id == bot_id).cloned() {
+    // 歌词窗口立即拿到新活跃 bot 的歌词（缓存或拉取）。
+    // 先克隆出守卫再 await：bots.read() 跨 await 会让写锁饿死整个拉取时长。
+    let status = state.bots.read().await.iter().find(|b| b.id == bot_id).cloned();
+    if let Some(status) = status {
         crate::lyrics::ensure_lyrics(&app, &state, &status).await;
     }
     Ok(())
