@@ -101,6 +101,7 @@ const STORE_FILE: &str = "settings.json";
 
 pub fn load_settings(app: &AppHandle) -> Settings {
     let Ok(store) = app.store(STORE_FILE) else {
+        eprintln!("[settings] store open failed");
         return Settings::default();
     };
     match store.get("settings") {
@@ -113,8 +114,12 @@ pub fn save_settings(app: &AppHandle, settings: &Settings) {
     if let Ok(store) = app.store(STORE_FILE) {
         if let Ok(v) = serde_json::to_value(settings) {
             store.set("settings", v);
-            let _ = store.save();
+            if let Err(e) = store.save() {
+                eprintln!("[settings] save failed: {e}");
+            }
         }
+    } else {
+        eprintln!("[settings] store open failed (save)");
     }
 }
 

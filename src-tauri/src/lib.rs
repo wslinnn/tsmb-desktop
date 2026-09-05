@@ -37,6 +37,10 @@ pub fn run() {
             commands::debug_elapsed,
         ])
         .setup(|app| {
+            // store 的 save 在目录不存在时静默失败（token/设置全丢）——先建目录
+            if let Ok(dir) = app.path().app_data_dir() {
+                let _ = std::fs::create_dir_all(dir);
+            }
             let loaded = settings::load_settings(app.handle());
             let lyrics_enabled = loaded.lyrics.enabled;
             let lyrics_locked = loaded.lyrics.locked;

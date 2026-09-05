@@ -62,22 +62,24 @@ pub async fn run_ws(app: tauri::AppHandle, state: SharedState) {
                 break;
             }
             let Some((base, token)) = state.creds().await else { break };
-            set_conn(&state, WsPhase::Connecting, None);
+            eprintln!("[ws] connecting to {base}");
+            set_conn(&state, WsPhase::Connecting, None).await;
             match connect_and_stream(&app, &state, &base, &token).await {
                 StreamOutcome::SessionExpired => {
+                    crate::commands::debug_log("ws outcome: SessionExpired");
                     crate::commands::force_logout(&app, &state, "登录已过期").await;
                     break;
                 }
                 StreamOutcome::LoggedOut => break,
                 StreamOutcome::Interrupted(e) => {
-                    set_conn(&state, WsPhase::Retrying, Some(e));
+                    set_conn(&state, WsPhase::Retrying, Some(e)).await;
                 }
             }
             let delay = std::cmp::min(30u64, 1u64 << attempt.min(5)) * 1000;
             attempt += 1;
             tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
         }
-        set_conn(&state, WsPhase::Closed, None);
+        set_conn(&state, WsPhase::Closed, None).await;
         let _ = auth_rx.changed().await; // 等下一次登录态变更
     }
 }
@@ -115,6 +117,7 @@ async fn connect_and_stream(
         Ok((s, _)) => s,
         Err(e) => {
             let msg = e.to_string();
+            crate::commands::debug_log(&format!("ws handshake err: {msg}"));
             // 握手完成但被 4001 关闭 → 会话过期（tungstenite 报 Protocol/Response 错误）
             if msg.contains("4001") {
                 return StreamOutcome::SessionExpired;
@@ -122,7 +125,8 @@ async fn connect_and_stream(
             return StreamOutcome::Interrupted(msg);
         }
     };
-    set_conn(state, WsPhase::Open, None);
+    crate::commands::debug_log("ws open");
+    set_conn(state, WsPhase::Open, None).await;
     let (mut sink, mut stream) = stream.split();
 
     while let Some(msg) = stream.next().await {
@@ -138,6 +142,7 @@ async fn connect_and_stream(
             }
             Ok(Message::Close(frame)) => {
                 let code = frame.as_ref().map(|f| u16::from(f.code)).unwrap_or(0);
+                crate::commands::debug_log(&format!("ws close code={code}"));
                 return match code {
                     4001 => StreamOutcome::SessionExpired,
                     _ => StreamOutcome::Interrupted("连接被服务端关闭".into()),

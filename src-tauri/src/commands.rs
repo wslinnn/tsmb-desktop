@@ -5,6 +5,26 @@ use crate::events;
 use crate::settings::{normalize_base_url, save_settings};
 use crate::state::{AuthPhase, AuthSnapshot, SharedState, WsPhase};
 
+/// 调试日志：Windows GUI 子进程的 stderr 不进 tauri dev 输出，落文件兜底。
+#[cfg(debug_assertions)]
+pub fn debug_log(msg: &str) {
+    use std::io::Write;
+    let path = std::env::temp_dir().join("tsmb-debug.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(f, "{} {msg}", chrono_like_now());
+    }
+}
+#[cfg(debug_assertions)]
+fn chrono_like_now() -> String {
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    format!("[{ms}]")
+}
+#[cfg(not(debug_assertions))]
+pub fn debug_log(_msg: &str) {}
+
 #[tauri::command]
 pub async fn login(
     app: AppHandle,
@@ -61,6 +81,7 @@ pub async fn logout(app: AppHandle, state: State<'_, SharedState>) -> Result<(),
 
 /// 401（REST）/ 4001（WS）统一走这里：清凭证、广播、打断 ws 循环。
 pub async fn force_logout(app: &AppHandle, state: &SharedState, reason: &str) {
+    debug_log(&format!("force_logout: {reason}"));
     {
         let mut s = state.settings.write().await;
         s.auth.token = None;

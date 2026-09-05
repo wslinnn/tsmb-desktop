@@ -1,20 +1,63 @@
-import { useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { useEffect } from "react";
+import { logout } from "../../commands";
+import { hydrate, useStore } from "../../store";
+import type { WsState } from "../../types";
+import Login from "./Login";
+import Bots from "./Bots";
+import SettingsPanel from "./Settings";
+
+const WS_LABEL: Record<WsState, string> = {
+  connecting: "连接中",
+  open: "已连接",
+  retrying: "重连中",
+  closed: "未连接",
+};
 
 export default function MainWindow() {
-  const [locked, setLocked] = useState(true);
+  const hydrated = useStore((s) => s.hydrated);
+  const auth = useStore((s) => s.auth);
+  const connection = useStore((s) => s.connection);
+  const settings = useStore((s) => s.settings);
+  const loggedIn = auth?.state === "logged-in";
 
-  const toggle = async () => {
-    const next = !locked;
-    await invoke("set_lyrics_locked", { locked: next });
-    setLocked(next);
-  };
+  useEffect(() => {
+    void hydrate();
+  }, []);
+
+  if (!hydrated) {
+    return <div className="boot">加载中…</div>;
+  }
+
+  if (!loggedIn) {
+    return (
+      <>
+        <Login defaultServer={settings?.server.baseUrl ?? ""} />
+        {auth?.reason && <div className="session-expired">{auth.reason}，请重新登录</div>}
+      </>
+    );
+  }
+
+  const ws = connection?.ws ?? "closed";
 
   return (
-    <main style={{ padding: 24, fontFamily: "system-ui, sans-serif" }}>
-      <h1>tsmb-desktop</h1>
-      <p>主窗口占位（M3 实装：登录 / bot 选择 / 歌词设置）</p>
-      <button onClick={toggle}>{locked ? "解锁歌词窗口" : "锁定歌词窗口"}</button>
+    <main className="main-window">
+      <header className="topbar">
+        <span className="brand">tsmb-desktop</span>
+        <span className={`ws-indicator ${ws}`} title={connection?.error ?? ""}>
+          <i />
+          {WS_LABEL[ws]}
+        </span>
+        <span className="spacer" />
+        <span className="who">{auth.username}</span>
+        <button className="ghost" onClick={() => void logout()}>
+          登出
+        </button>
+      </header>
+
+      <div className="content">
+        <Bots />
+        <SettingsPanel />
+      </div>
     </main>
   );
 }
