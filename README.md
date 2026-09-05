@@ -1,6 +1,6 @@
 # tsmb-desktop
 
-TeamSpeak 音乐机器人（[teamspeak-music-bot](../teamspeak-music-bot)）的桌面端伴侣应用：
+TeamSpeak 音乐机器人（[teamspeak-music-bot](https://github.com/wslinnn/teamspeak-music-bot)）的桌面端伴侣应用：
 登录服务器、选择机器人，在桌面上悬浮显示实时滚动的歌词。
 
 Tauri 2 + React 19 + TypeScript，状态核心在 Rust（WS/轮询/锚点插值/歌词缓存），
