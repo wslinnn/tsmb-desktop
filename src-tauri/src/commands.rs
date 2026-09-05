@@ -202,7 +202,17 @@ pub async fn update_lyrics_settings(
     state.wake_tick();
 
     events::emit_settings(&app, &merged);
+    // 托盘菜单文案/置灰跟随歌词状态（锁定项在歌词关闭时置灰）
+    crate::tray::sync_menu(&app);
+    // 锁定穿透轮询随 enabled && locked 启停（含解锁/关歌词/重建窗各路径）
+    crate::lyrics_window::sync_lock_poller(&app, merged.lyrics.enabled && merged.lyrics.locked);
     Ok(())
+}
+
+/// 前端上报歌词窗锁按钮热区（逻辑像素），锁定轮询据此动态解除穿透。
+#[tauri::command]
+pub fn set_lyrics_lock_hotspot(x: f64, y: f64, w: f64, h: f64) {
+    crate::lyrics_window::set_lock_hotspot(x, y, w, h);
 }
 
 #[tauri::command]

@@ -8,6 +8,7 @@ pub mod poller;
 pub mod settings;
 pub mod state;
 pub mod timing;
+pub mod tray;
 pub mod types;
 pub mod ws;
 
@@ -27,6 +28,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             commands::login,
             commands::logout,
@@ -35,6 +37,7 @@ pub fn run() {
             commands::update_lyrics_settings,
             commands::set_lyrics_enabled,
             commands::set_lyrics_locked,
+            commands::set_lyrics_lock_hotspot,
             commands::debug_elapsed,
         ])
         .setup(|app| {
@@ -44,7 +47,7 @@ pub fn run() {
             }
             let loaded = settings::load_settings(app.handle());
             let lyrics_enabled = loaded.lyrics.enabled;
-            let state = Arc::new(state::AppState::new(loaded));
+            let state = Arc::new(state::AppState::new(loaded.clone()));
             app.manage(state.clone());
 
             tauri::async_runtime::spawn(ws::run_ws(app.handle().clone(), state.clone()));
@@ -53,23 +56,29 @@ pub fn run() {
 
             if lyrics_enabled {
                 lyrics_window::create(app.handle())?;
+                if loaded.lyrics.locked {
+                    lyrics_window::sync_lock_poller(app.handle(), true);
+                }
             }
+            tray::init(app.handle())?;
             Ok(())
         })
         .on_window_event(|window, event| {
             let app = window.app_handle();
             match event {
-                // 窗口关闭规则（无托盘闭环）：关主窗时歌词窗在 → 只隐藏主窗；
-                // 歌词窗关闭 → 记几何 + enabled=false + 唤回隐藏中的主窗。
+                // 窗口关闭规则（托盘常驻）：主窗 ✕ = 隐藏到托盘（首次气泡提示）；
+                // 歌词窗 ✕ = 记几何 + enabled=false（托盘退出走 is_exiting 跳过）。
                 WindowEvent::CloseRequested { api, .. } => match window.label() {
                     "main" => {
-                        if app.get_webview_window("lyrics").is_some() {
-                            api.prevent_close();
-                            let _ = window.hide();
-                        }
+                        api.prevent_close();
+                        let _ = window.hide();
+                        tray::notify_tray_hint_once(app);
                     }
                     "lyrics" => {
                         lyrics_window::save_geometry_now(app);
+                        if tray::is_exiting() {
+                            return;
+                        }
                         // 主线程事件处理器：用 blocking_write（try_write 在
                         // 与防抖落盘任务竞争失败时会静默丢掉 enabled=false，
                         // 窗口关了下次启动却又出现）
@@ -84,8 +93,15 @@ pub fn run() {
                     }
                     _ => {}
                 },
-                // 位置记忆：拖动结束后落盘（防抖）
+                // 位置记忆：拖动/拉伸结束后落盘（防抖，含宽度）
                 WindowEvent::Moved(_pos) if window.label() == "lyrics" => {
+                    lyrics_window::schedule_geometry_save(app);
+                }
+                // 仅宽度拉伸：广播拉伸态给遮罩；高度吸附延迟到松手后
+                // （拉伸中同步 set_size 会与模态循环互搏导致卡死）
+                WindowEvent::Resized(_) if window.label() == "lyrics" => {
+                    lyrics_window::notify_resizing(app);
+                    lyrics_window::schedule_height_snap(app);
                     lyrics_window::schedule_geometry_save(app);
                 }
                 _ => {}

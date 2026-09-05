@@ -37,6 +37,10 @@ export function setLyricsLocked(locked: boolean): Promise<void> {
   return invoke("set_lyrics_locked", { locked });
 }
 
+export function setLyricsLockHotspot(x: number, y: number, w: number, h: number): Promise<void> {
+  return invoke("set_lyrics_lock_hotspot", { x, y, w, h });
+}
+
 export function debugElapsed(): Promise<Record<string, unknown>> {
   return invoke("debug_elapsed");
 }

@@ -324,3 +324,17 @@ input[type="range"] {
   gap: 10px;
   overflow: hidden;
 }
+
+/* 桌面歌词：行切换交叉淡入 / 淡出，超宽行来回跑马灯（--mw 为溢出宽度） */
+@keyframes lyric-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes lyric-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+@keyframes lyric-marquee {
+  from { transform: translateX(0); }
+  to { transform: translateX(calc(-1 * var(--mw))); }
+}
