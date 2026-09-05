@@ -49,6 +49,8 @@ npm run tauri build     # 产出 NSIS 安装包 src-tauri/target/release/bundle/
 
 ## 注意事项
 
+- **服务器版本要求**：需要 teamspeak-music-bot **v2.2.0+**（`/api/client` Bearer
+  token 鉴权通道自该版本引入；seek 补发 stateChange 也在同版本）。
 - **公网部署必须 https**：v1 的 Bearer token 走 `Authorization` 头，明文 http 下
   局域网内可见。家用局域网 http 可接受。
 - **全屏独占游戏**中桌面歌词不可见（无边框窗口被独占模式覆盖，各音乐软件通病）；
