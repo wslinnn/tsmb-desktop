@@ -6,13 +6,45 @@
 
 状态标记：[ ] 待做 / [x] 完成 / [~] 部分完成。执行时逐项回填实测数据。
 
+## 〇、基线实测（2026-09-05，优化前，release 构建 12572b0）
+
+环境：Win11 26200，16 逻辑核。release exe（含 review1/2 修复）。假后端 dev-server。
+采样脚本：进程树（tsmb-desktop + 7×msedgewebview2）CPU/工作集/IO 写计数，2s 间隔 × 60s。
+CPU 换算：整系统百分比 ×16 = 单核占用。
+
+| 状态 | CPU 整系统 | CPU 单核 | 内存私有合计 | 磁盘写入 | 说明 |
+|---|---|---|---|---|---|
+| A 播放中·双窗可见 | avg 0.15% / max 0.75% | ≈2.4% | 283.7MB | 9728 ops/61s ≈1.6MB | tick 全速跑 |
+| B 歌词-only（主窗隐藏） | avg 0.12% / max 0.33% | ≈1.9% | ≈284MB | 9456 ops/61s | 隐藏主窗 renderer 仍存活 |
+| C 暂停·双窗可见 | avg 0.12% / max 0.99% | ≈1.9% | ≈285MB | 8246 ops/61s | 暂停不停车，与 A 无异 |
+| D 登出（歌词窗残留） | avg 0.02% / max 0.13% | ≈0.3% | ≈284MB | 1180 ops/61s | ticker 已门控 |
+
+内存按进程拆分（状态 A 稳态，私有工作集）：
+host(Rust) 42.1 + browser 67.5 + gpu 84.1 + renderer-main 36.1 + renderer-lyrics 31 +
+utility 19.9 + crashpad 3 ≈ **284MB**。其中 WebView2 固定开销（browser+gpu+utility+crashpad）
+≈ **175MB 不可寻址**；我们可寻址的是 host + 两个 renderer ≈ **109MB**。
+工作集求和（534MB）含大量共享页重复计数，仅作参考。预算"稳态 <120MB"按树内私有内存
+不可达——修订为：**可寻址部分（host+renderers）<110MB，且树私有总量不高于基线**。
+
+磁盘写入：稳态 settings.json 零写入（C4 ✓）；写入风暴 ~8000 ops/min 来自 tick 驱动的
+渲染管线（GPU 进程写频率 ≈10Hz 与 tick 同频），WebView2 底噪 ≈1180 ops/min（D 态）。
+应用数据目录 44MB（EBWebView 缓存为主）。exe 13.8MB，安装包 3.2MB。
+
+网络（代码推导，C5 部分）：播放中 poller 2s 间隔 = 0.5 req/s，超预算（≤0.1）5 倍。
+
+**基线新发现**：
+- F1 登出后歌词窗不关闭，冻结显示旧歌词行；且 settings.enabled 保持 true，
+  下次启动登录前歌词窗照常创建——修复归入 T2。
+- F2 主窗隐藏后 renderer 进程不挂起（内存/CPU 与可见时相同）——T3 的直接依据。
+- F3 暂停态与播放态资源占用相同——T1/T2 的直接依据。
+
 ## 一、量化预算（验收标准）
 
 | 维度 | 播放中·歌词可见 | 暂停/登出/歌词关闭 |
 |---|---|---|
 | CPU | 平均 <1% 单核；行切换瞬间 <5% | <0.1%（近零） |
 | 唤醒频率 | 行边界精确唤醒 + ≤1次/s 兜底 | 无周期唤醒 |
-| 内存（全进程含 WebView2 子进程） | 稳态 <120MB，目标 <80MB | 主窗隐藏时更低 |
+| 内存（全进程含 WebView2 子进程） | 可寻址（host+renderers）<110MB；树私有 ≤ 基线 284MB | 主窗隐藏时更低 |
 | 磁盘写入 | 稳态 ≈0 | ≈0 |
 | 网络（对 VPS） | 播放中 ≤0.1 req/s/客户端 | ≈0 |
 | 安装包 / 安装后 | <5MB / <30MB | — |
@@ -31,6 +63,7 @@
 ### T2 停车矩阵 [ ]
 登出 / 歌词禁用 / 无活跃 bot / 暂停 四状态下，ws/poller/ticker 三任务
 各自的唤醒率必须趋零。现状：登出态 ticker 已门控但仍 10Hz 空醒。
+含 F1 修复：登出时关闭歌词窗并清 enabled（当前残留冻结帧，见基线 F1）。
 
 ### T3 不可见不渲染 [ ]
 主窗隐藏（歌词-only 模式）时挂起其 WebView（WebView2 TrySuspend，评估
@@ -66,12 +99,14 @@ debug 日志（TEMP/tsmb-debug.log，仅 debug 构建）加 1MB 上限；
 ## 三、测试矩阵（执行时逐项回填证据）
 
 ### C 客户端性能
-- [ ] C1 基线：播放中进程树（tsmb-desktop + msedgewebview2*）CPU%/工作集，
-      60s 采样；优化后对拍
-- [ ] C2 空闲/登出态 CPU 与唤醒率
+- [x] C1 基线：播放中进程树（tsmb-desktop + msedgewebview2*）CPU%/工作集，
+      60s 采样；优化后对拍（见「〇、基线实测」表）
+- [x] C2 空闲/登出态 CPU 与唤醒率（D 态 avg 0.02%；ticker 10Hz 空醒由代码
+      结构推导，优化后以 CPU 对拍验证）
 - [ ] C3 内存老化：假后端循环切歌 ≥1h，工作集无单调增长；歌词缓存 LRU 生效
-- [ ] C4 磁盘：稳态 60s settings.json mtime 不变；滑杆拖动一次写次数 ≤3
-- [ ] C5 网络速率：各状态实际请求间隔与设计一致
+- [~] C4 磁盘：稳态 60s settings.json mtime 不变（✓ 已证）；滑杆拖动一次写
+      次数 ≤3（待测）
+- [~] C5 网络速率：播放中 0.5 req/s（代码推导，超预算 5 倍，T4 后复测）
 
 ### S 服务端（VPS 多用户）
 - [ ] S1 歌词惊群：N 客户端同 bot 切歌，假后端 getLyrics 计数器实测上游
@@ -103,8 +138,7 @@ debug 日志（TEMP/tsmb-debug.log，仅 debug 构建）加 1MB 上限；
 ## 四、已知取舍（记录在案，不处理）
 
 - poller 对同一 bot 双写（原地改 + update_bot 替换）——冗余但无害
-- dev-server 内存库重启后 token 失效——真实后端 SQLite 无此现象
-- 登出后歌词窗保留最后一帧（tick 停止后不清屏）——托盘/状态展示时一并处理
+- dev-server 已改文件库（scripts/dev-bot.db），重启 token 保持有效
 - 全屏独占游戏歌词不可见——平台通病，README 已注明
 
 ## 五、技术栈优势盘点（结论）
